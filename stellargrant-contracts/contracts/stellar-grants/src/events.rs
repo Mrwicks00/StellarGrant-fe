@@ -6,10 +6,8 @@ pub struct Events;
 impl Events {
     /// Emit a grant created event
     pub fn grant_created(env: &Env, grant_id: u64, owner: &Address) {
-        env.events().publish(
-            (Symbol::new(env, "GrantCreated"), grant_id),
-            owner.clone(),
-        );
+        env.events()
+            .publish((Symbol::new(env, "GrantCreated"), grant_id), owner.clone());
     }
 
     /// Emit a milestone approved event

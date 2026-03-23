@@ -1,13 +1,13 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, Env, Error};
 
-mod types;
 mod events;
 mod storage;
+mod types;
 
-pub use types::ContractError;
 pub use events::Events;
 pub use storage::Storage;
+pub use types::ContractError;
 
 #[contract]
 pub struct StellarGrantsContract;
