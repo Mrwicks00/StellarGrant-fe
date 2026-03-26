@@ -4,6 +4,7 @@ mod tests {
     use crate::types::{ContractError, Grant, GrantFund, GrantStatus, Milestone, MilestoneState};
     use crate::StellarGrantsContract;
     use crate::StellarGrantsContractClient;
+    use soroban_sdk::testutils::Ledger as _;
     use soroban_sdk::{testutils::Address as _, token, Address, Env, Map, String, Vec};
 
     fn setup_test(
@@ -69,6 +70,7 @@ mod tests {
                 status_updated_at: 0,
                 proof_url: Some(String::from_str(env, "https://proof.url")),
                 submission_timestamp: env.ledger().timestamp(),
+                deadline: 0,
             };
             Storage::set_milestone(env, grant_id, milestone_idx, &milestone);
         });
@@ -334,6 +336,7 @@ mod tests {
                     status_updated_at: 0,
                     proof_url: None,
                     submission_timestamp: 0,
+                    deadline: 0,
                 };
                 Storage::set_milestone(&env, grant_id, i, &milestone);
             }
@@ -401,6 +404,7 @@ mod tests {
                 status_updated_at: 0,
                 proof_url: None,
                 submission_timestamp: 0,
+                deadline: 0,
             };
             Storage::set_milestone(&env, grant_id, 0, &m1);
 
@@ -416,6 +420,7 @@ mod tests {
                 status_updated_at: 0,
                 proof_url: None,
                 submission_timestamp: 0,
+                deadline: 0,
             };
             Storage::set_milestone(&env, grant_id, 1, &m2);
         });
@@ -472,6 +477,7 @@ mod tests {
                 status_updated_at: 0,
                 proof_url: None,
                 submission_timestamp: 0,
+                deadline: 0,
             };
             Storage::set_milestone(&env, grant_id, 0, &m1);
         });
@@ -639,6 +645,15 @@ mod tests {
             Storage::set_grant(&env, grant_id, &grant);
         });
 
+        // Pre-seed milestone 0 in Pending state (as grant_create normally would)
+        create_milestone(
+            &env,
+            &contract_id,
+            grant_id,
+            milestone_idx,
+            MilestoneState::Pending,
+        );
+
         let description = String::from_str(&env, "Completed smart contract implementation");
         let proof_url = String::from_str(&env, "https://github.com/org/repo/pull/42");
 
@@ -761,7 +776,16 @@ mod tests {
         let token = Address::generate(&env);
         let grant_id = 1u64;
 
-        create_grant(&env, &contract_id, grant_id, owner, token, Vec::new(&env));
+        create_grant(
+            &env,
+            &contract_id,
+            grant_id,
+            owner.clone(),
+            token,
+            Vec::new(&env),
+        );
+        // Pre-seed milestone 0 in Pending state
+        create_milestone(&env, &contract_id, grant_id, 0, MilestoneState::Pending);
 
         let description = String::from_str(&env, "Work done");
         let proof_url = String::from_str(&env, "https://proof.url");
@@ -1094,6 +1118,7 @@ mod tests {
             &500i128,  // milestone_amount
             &2u32,     // num_milestones
             &reviewers,
+            &None, // milestone_deadlines
         );
 
         assert_eq!(grant_id, 1);
@@ -1132,6 +1157,7 @@ mod tests {
             &500i128,
             &2u32,
             &reviewers,
+            &None,
         );
         assert_eq!(res1, Err(Ok(ContractError::InvalidInput.into())));
 
@@ -1145,6 +1171,7 @@ mod tests {
             &-100i128,
             &2u32,
             &reviewers,
+            &None,
         );
         assert_eq!(res2, Err(Ok(ContractError::InvalidInput.into())));
     }
@@ -1171,6 +1198,7 @@ mod tests {
             &500i128,
             &0u32,
             &reviewers,
+            &None,
         );
         assert_eq!(res1, Err(Ok(ContractError::InvalidInput.into())));
 
@@ -1184,6 +1212,7 @@ mod tests {
             &100i128,
             &101u32,
             &reviewers,
+            &None,
         );
         assert_eq!(res2, Err(Ok(ContractError::InvalidInput.into())));
     }
@@ -1211,6 +1240,7 @@ mod tests {
             &500i128,
             &2u32,
             &reviewers,
+            &None,
         );
         assert_eq!(res, Err(Ok(ContractError::InvalidInput.into())));
     }
@@ -1236,6 +1266,7 @@ mod tests {
             &500i128,
             &2u32,
             &reviewers,
+            &None,
         );
         assert!(res.is_err());
     }
@@ -1423,5 +1454,147 @@ mod tests {
                 1
             ); // Stayed 1
         });
+    }
+
+    // -------------------------------------------------------------------------
+    // Milestone Deadline tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_grant_create_with_deadlines() {
+        let env = Env::default();
+        let (client, _, _) = setup_test(&env);
+        let owner = Address::generate(&env);
+        let token = Address::generate(&env);
+        let reviewers = Vec::new(&env);
+        let title = String::from_str(&env, "Deadline Grant");
+        let description = String::from_str(&env, "A grant with deadlines");
+
+        let deadline_1: u64 = 1_000_000;
+        let deadline_2: u64 = 2_000_000;
+        let mut deadlines: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
+        deadlines.push_back(deadline_1);
+        deadlines.push_back(deadline_2);
+
+        env.mock_all_auths();
+
+        let grant_id = client.grant_create(
+            &owner,
+            &title,
+            &description,
+            &token,
+            &1000i128,
+            &500i128,
+            &2u32,
+            &reviewers,
+            &Some(deadlines),
+        );
+
+        env.as_contract(&client.address, || {
+            let m0 = Storage::get_milestone(&env, grant_id, 0).unwrap();
+            assert_eq!(m0.deadline, deadline_1);
+            assert_eq!(m0.state, MilestoneState::Pending);
+
+            let m1 = Storage::get_milestone(&env, grant_id, 1).unwrap();
+            assert_eq!(m1.deadline, deadline_2);
+            assert_eq!(m1.state, MilestoneState::Pending);
+        });
+    }
+
+    #[test]
+    fn test_grant_create_deadline_length_mismatch() {
+        let env = Env::default();
+        let (client, _, _) = setup_test(&env);
+        let owner = Address::generate(&env);
+        let token = Address::generate(&env);
+        let reviewers = Vec::new(&env);
+        let title = String::from_str(&env, "Bad Deadline Grant");
+        let description = String::from_str(&env, "Mismatched deadlines");
+
+        // Only 1 deadline provided but 2 milestones
+        let mut deadlines: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
+        deadlines.push_back(1_000_000u64);
+
+        env.mock_all_auths();
+
+        let result = client.try_grant_create(
+            &owner,
+            &title,
+            &description,
+            &token,
+            &1000i128,
+            &500i128,
+            &2u32,
+            &reviewers,
+            &Some(deadlines),
+        );
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput.into())));
+    }
+
+    #[test]
+    fn test_milestone_submit_deadline_passed() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (client, _, contract_id) = setup_test(&env);
+        let owner = Address::generate(&env);
+        let token = Address::generate(&env);
+        let grant_id = 1u64;
+        let milestone_idx = 0u32;
+
+        // Seed the ledger timestamp at 0 and set up grant
+        env.as_contract(&contract_id, || {
+            let grant = Grant {
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                token,
+                status: GrantStatus::Active,
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+                total_milestones: 1,
+                milestones_paid_out: 0,
+                escrow_balance: 1000,
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: 0,
+            };
+            Storage::set_grant(&env, grant_id, &grant);
+
+            // Seed milestone with deadline of 1000 (will be in the past when we advance timestamp)
+            let milestone = Milestone {
+                idx: milestone_idx,
+                description: String::from_str(&env, "Description"),
+                amount: 500,
+                state: MilestoneState::Pending,
+                votes: Map::new(&env),
+                approvals: 0,
+                rejections: 0,
+                reasons: Map::new(&env),
+                status_updated_at: 0,
+                proof_url: None,
+                submission_timestamp: 0,
+                deadline: 1_000, // deadline at timestamp 1000
+            };
+            Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
+        });
+
+        // Advance ledger timestamp past the deadline
+        env.ledger().set_timestamp(5_000);
+
+        let description = String::from_str(&env, "Late submission");
+        let proof_url = String::from_str(&env, "https://proof.url");
+
+        // Submission should be rejected because deadline has passed
+        let result = client.try_milestone_submit(
+            &grant_id,
+            &milestone_idx,
+            &owner,
+            &description,
+            &proof_url,
+        );
+        assert_eq!(result, Err(Ok(ContractError::DeadlinePassed.into())));
     }
 }
