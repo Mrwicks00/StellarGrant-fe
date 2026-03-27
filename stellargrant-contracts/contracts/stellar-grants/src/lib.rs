@@ -32,6 +32,7 @@ impl StellarGrantsContract {
     /// * None.
     pub fn initialize(env: Env, council: Address) -> Result<(), ContractError> {
         Storage::set_council(&env, &council);
+        Events::emit_contract_initialized(&env, council);
         Ok(())
     }
 
@@ -48,6 +49,11 @@ impl StellarGrantsContract {
             }
         }
         Storage::set_global_admin(&env, &new_admin);
+        Events::emit_contract_upgraded(
+            &env,
+            caller,
+            String::from_str(&env, "global_admin_updated"),
+        );
         Ok(())
     }
 
@@ -60,6 +66,7 @@ impl StellarGrantsContract {
             }
         }
         Storage::set_council(&env, &council);
+        Events::emit_contract_upgraded(&env, caller, String::from_str(&env, "council_updated"));
         Ok(())
     }
 
@@ -347,7 +354,7 @@ impl StellarGrantsContract {
 
         Storage::set_contributor(&env, contributor.clone(), &profile);
 
-        Events::emit_contributor_registered(&env, contributor, name);
+        Events::emit_contributor_registered(&env, 0, contributor, name);
 
         Ok(())
     }
@@ -663,6 +670,7 @@ impl StellarGrantsContract {
                 Storage::set_contributor(env, grant.owner.clone(), &profile);
                 Events::emit_reputation_increased(
                     env,
+                    grant_id,
                     grant.owner.clone(),
                     profile.reputation_score,
                     profile.total_earned,

@@ -14,7 +14,7 @@ mod tests {
     use crate::StellarGrantsContractClient;
     use soroban_sdk::testutils::Ledger as _;
     use soroban_sdk::{
-        testutils::{storage::Persistent as _, Address as _, Ledger as _},
+        testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
         token, Address, Env, Map, String, Vec,
     };
 
@@ -1055,6 +1055,42 @@ mod tests {
         let result =
             client.try_contributor_register(&contributor, &name, &bio, &skills, &github_url);
         assert_eq!(result, Err(Ok(ContractError::AlreadyRegistered.into())));
+    }
+
+    #[test]
+    fn test_initialize_emits_standardized_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, _) = setup_test(&env);
+        let council = Address::generate(&env);
+
+        client.initialize(&council);
+
+        let events_dbg = format!("{:?}", env.events().all());
+        assert!(events_dbg.contains("ContractInitialized"));
+        assert!(events_dbg.contains("event_version"));
+        assert!(events_dbg.contains("grant_id"));
+    }
+
+    #[test]
+    fn test_contributor_registered_event_includes_grant_id_and_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, _) = setup_test(&env);
+        let contributor = Address::generate(&env);
+
+        client.contributor_register(
+            &contributor,
+            &String::from_str(&env, "Eve"),
+            &String::from_str(&env, "Builder"),
+            &Vec::new(&env),
+            &String::from_str(&env, "https://github.com/eve"),
+        );
+
+        let events_dbg = format!("{:?}", env.events().all());
+        assert!(events_dbg.contains("ContributorRegistered"));
+        assert!(events_dbg.contains("event_version"));
+        assert!(events_dbg.contains("grant_id"));
     }
 
     #[test]
