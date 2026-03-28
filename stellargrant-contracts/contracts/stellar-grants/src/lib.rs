@@ -155,6 +155,7 @@ impl StellarGrantsContract {
         reviewers: soroban_sdk::Vec<Address>,
         quorum: u32,
         milestone_deadlines: Option<soroban_sdk::Vec<u64>>,
+        min_funding: i128,
     ) -> Result<u64, ContractError> {
         owner.require_auth();
 
@@ -190,13 +191,19 @@ impl StellarGrantsContract {
 
         let grant_id = Storage::increment_grant_counter(&env);
 
+        let initial_status = if min_funding > 0 {
+            GrantStatus::PendingFunding
+        } else {
+            GrantStatus::Active
+        };
+
         let grant = Grant {
             id: grant_id,
             owner: owner.clone(),
             title: title.clone(),
             description,
             token,
-            status: GrantStatus::Active,
+            status: initial_status,
             total_amount,
             milestone_amount,
             reviewers,
@@ -209,6 +216,7 @@ impl StellarGrantsContract {
             timestamp: env.ledger().timestamp(),
             last_heartbeat: env.ledger().timestamp(),
             cancellation_requested_at: None,
+            min_funding,
         };
 
         Storage::set_grant(&env, grant_id, &grant);
@@ -282,6 +290,7 @@ impl StellarGrantsContract {
             reviewers,
             quorum,
             None,
+            0,
         )?;
         Storage::set_grant_min_reputation(&env, grant_id, min_reputation_score);
         Ok(grant_id)
@@ -335,6 +344,7 @@ impl StellarGrantsContract {
             reviewers,
             quorum,
             None,
+            0,
         )?;
 
         Storage::set_escrow_state(
@@ -1173,7 +1183,7 @@ impl StellarGrantsContract {
             if grant.status == GrantStatus::Inactive {
                 return Err(ContractError::HeartbeatMissed);
             }
-            if grant.status != GrantStatus::Active {
+            if grant.status != GrantStatus::Active && grant.status != GrantStatus::PendingFunding {
                 return Err(ContractError::InvalidState);
             }
 
@@ -1208,6 +1218,14 @@ impl StellarGrantsContract {
                     funder: funder.clone(),
                     amount,
                 });
+            }
+
+            // Auto-transition PendingFunding → Active once threshold is met
+            if grant.status == GrantStatus::PendingFunding
+                && grant.escrow_balance >= grant.min_funding
+            {
+                grant.status = GrantStatus::Active;
+                Events::emit_grant_activated(&env, grant.id);
             }
 
             Storage::set_grant(&env, grant_id, &grant);

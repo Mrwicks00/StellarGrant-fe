@@ -122,6 +122,8 @@ pub enum GrantStatus {
     Paused = 5,
     /// Grant became inactive due to missed heartbeats; can be restored via grant_ping.
     Inactive = 6,
+    /// Grant is waiting to reach its minimum funding threshold before becoming Active.
+    PendingFunding = 7,
 }
 
 #[contracttype]
@@ -153,6 +155,8 @@ pub struct Grant {
     /// Timestamp when a cancellation was first requested (grace-period cancellation).
     pub cancellation_requested_at: Option<u64>,
     pub last_heartbeat: u64,
+    /// Minimum escrow balance required before the grant transitions from PendingFunding to Active.
+    pub min_funding: i128,
 }
 
 #[contracttype]

@@ -621,6 +621,15 @@ impl Events {
         };
         event.publish(env);
     }
+
+    pub fn emit_grant_activated(env: &Env, grant_id: u64) {
+        let event = GrantActivated {
+            event_version: EVENT_VERSION,
+            grant_id,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
 }
 
 #[contractevent]
@@ -735,6 +744,14 @@ pub struct HeartbeatUpdated {
 #[contractevent]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GrantGoneInactive {
+    pub event_version: u32,
+    pub grant_id: u64,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GrantActivated {
     pub event_version: u32,
     pub grant_id: u64,
     pub timestamp: u64,
