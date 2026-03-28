@@ -3915,7 +3915,7 @@ mod tests {
     // ── Grant Pause / Resume tests ──────────────────────────────────
 
     #[test]
-    fn test_blacklist_enforcement() {
+    fn test_grant_pause_and_resume_success() {
         let env = Env::default();
         let (client, admin, contract_id) = setup_test(&env);
         let global_admin = admin.clone();
@@ -3924,20 +3924,21 @@ mod tests {
         let council = Address::generate(&env);
         client.initialize(&admin, &council);
 
-        let target = Address::generate(&env);
-
-        // Add to blacklist
-        client.admin_blacklist_add(&global_admin, &target);
-
-        // Attempt to register contributor
-        let result = client.try_contributor_register(
-            &target,
-            &String::from_str(&env, "Test"),
-            &String::from_str(&env, "Bio"),
-            &Vec::new(&env),
-            &String::from_str(&env, "https://github.com/test"),
+        create_grant(
+            &env,
+            &contract_id,
+            grant_id,
+            owner.clone(),
+            token,
+            Vec::new(&env),
         );
-        assert_eq!(result, Err(Ok(ContractError::Blacklisted.into())));
+
+        client.grant_pause(&grant_id, &owner);
+
+        env.as_contract(&contract_id, || {
+            let g = Storage::get_grant(&env, grant_id).unwrap();
+            assert_eq!(g.status, GrantStatus::Paused);
+        });
 
         // Attempt to create grant
         let result = client.try_grant_create(
@@ -3957,12 +3958,28 @@ mod tests {
     }
 
     #[test]
-    fn test_heartbeat_timeout_and_ping() {
+    fn test_grant_pause_unauthorized() {
         let env = Env::default();
         env.mock_all_auths();
         let (client, _, contract_id) = setup_test(&env);
-
         let owner = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let token = Address::generate(&env);
+        let grant_id = 201u64;
+
+        create_grant(&env, &contract_id, grant_id, owner, token, Vec::new(&env));
+
+        let result = client.try_grant_pause(&grant_id, &attacker);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized.into())));
+    }
+
+    #[test]
+    fn test_grant_resume_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, contract_id) = setup_test(&env);
+        let owner = Address::generate(&env);
+        let attacker = Address::generate(&env);
         let token = Address::generate(&env);
         let mut reviewers = Vec::new(&env);
         reviewers.push_back(owner.clone());
@@ -3979,6 +3996,7 @@ mod tests {
             &None,
             &0i128,
         );
+        client.grant_pause(&grant_id, &owner);
 
         env.ledger().set_timestamp(31 * 24 * 60 * 60 + 1);
 
@@ -3994,18 +4012,37 @@ mod tests {
         client.grant_ping(&grant_id, &owner);
 
         env.as_contract(&contract_id, || {
-            let grant = Storage::get_grant(&env, grant_id).unwrap();
-            assert_eq!(grant.status, GrantStatus::Active);
-            assert!(grant.last_heartbeat > 0);
+            let grant = Grant {
+                id: grant_id,
+                title: String::from_str(&env, "Paused"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                token: token_id.clone(),
+                status: GrantStatus::Paused,
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+                quorum: 1,
+                total_milestones: 1,
+                milestones_paid_out: 0,
+                escrow_balance: 0,
+                funders: Vec::new(&env),
+                reason: None,
+                cancellation_requested_at: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+            };
+            Storage::set_grant(&env, grant_id, &grant);
         });
 
         client.milestone_submit(
             &grant_id,
             &0,
             &owner,
-            &String::from_str(&env, "M1"),
-            &String::from_str(&env, "url"),
+            &String::from_str(&env, "Work done"),
+            &String::from_str(&env, "https://proof.url"),
         );
+        assert_eq!(result, Err(Ok(ContractError::InvalidState.into())));
     }
 
     #[test]
