@@ -33,7 +33,7 @@
                     "symbol": "Grant"
                   },
                   {
-                    "u64": "301"
+                    "u64": "1"
                   }
                 ]
               },
@@ -65,7 +65,7 @@
                             "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                           },
                           "val": {
-                            "i128": "0"
+                            "i128": "1000"
                           }
                         }
                       ]
@@ -84,7 +84,7 @@
                       "symbol": "id"
                     },
                     "val": {
-                      "u64": "301"
+                      "u64": "1"
                     }
                   },
                   {
@@ -116,7 +116,7 @@
                       "symbol": "min_funding"
                     },
                     "val": {
-                      "i128": "500"
+                      "i128": "0"
                     }
                   },
                   {
@@ -162,7 +162,7 @@
                       "symbol": "status"
                     },
                     "val": {
-                      "u32": 7
+                      "u32": 1
                     }
                   },
                   {
@@ -178,7 +178,7 @@
                       "symbol": "title"
                     },
                     "val": {
-                      "string": "Pending Grant"
+                      "string": "Test"
                     }
                   },
                   {
@@ -218,7 +218,7 @@
                     "symbol": "Milestone"
                   },
                   {
-                    "u64": "301"
+                    "u64": "1"
                   },
                   {
                     "u32": 0
