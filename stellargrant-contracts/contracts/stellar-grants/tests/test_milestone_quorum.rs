@@ -63,7 +63,8 @@ fn test_milestone_voting_quorum_and_events() {
     // Awaiting payout after quorum
     assert_eq!(milestone.state, MilestoneState::AwaitingPayout);
 
-    env.ledger().set_timestamp(env.ledger().timestamp() + stellar_grants::CHALLENGE_PERIOD + 1);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + stellar_grants::CHALLENGE_PERIOD + 1);
     client.milestone_payout(&grant_id, &0, &owner);
 
     let paid_milestone = client.get_milestone(&grant_id, &0);

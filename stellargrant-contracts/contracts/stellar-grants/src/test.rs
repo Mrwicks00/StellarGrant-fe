@@ -459,7 +459,8 @@ mod tests {
         });
 
         // Advance pass challenge period to process payout
-        env.ledger().set_timestamp(env.ledger().timestamp() + crate::CHALLENGE_PERIOD + 1);
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + crate::CHALLENGE_PERIOD + 1);
         client.milestone_payout(&grant_id, &milestone_idx, &owner);
 
         env.as_contract(&contract_id, || {
@@ -2556,7 +2557,8 @@ mod tests {
             assert_eq!(updated_milestone.state, MilestoneState::AwaitingPayout);
         });
 
-        env.ledger().set_timestamp(env.ledger().timestamp() + crate::CHALLENGE_PERIOD + 1);
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + crate::CHALLENGE_PERIOD + 1);
         client.milestone_payout(&grant_id, &milestone_idx, &owner);
 
         env.as_contract(&contract_id, || {
@@ -4975,7 +4977,8 @@ mod tests {
         let feedback = Some(String::from_str(&env, "Great job!"));
         client.milestone_vote(&grant_id, &milestone_idx, &reviewer, &true, &feedback);
 
-        env.ledger().set_timestamp(env.ledger().timestamp() + crate::CHALLENGE_PERIOD + 1);
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + crate::CHALLENGE_PERIOD + 1);
         client.milestone_payout(&grant_id, &milestone_idx, &owner);
 
         // Milestone is paid out, owner balance increases by milestone amount (100)
@@ -5031,7 +5034,8 @@ mod tests {
         let feedback = Some(String::from_str(&env, "Great job!"));
         client.milestone_vote(&grant_id, &milestone_idx, &reviewer, &true, &feedback);
 
-        env.ledger().set_timestamp(env.ledger().timestamp() + crate::CHALLENGE_PERIOD + 1);
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + crate::CHALLENGE_PERIOD + 1);
         client.milestone_payout(&grant_id, &milestone_idx, &owner);
 
         env.as_contract(&contract_id, || {
@@ -5083,7 +5087,8 @@ mod tests {
         let feedback = Some(String::from_str(&env, "Great job!"));
         client.milestone_vote(&grant_id, &milestone_idx, &reviewer, &true, &feedback);
 
-        env.ledger().set_timestamp(env.ledger().timestamp() + crate::CHALLENGE_PERIOD + 1);
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + crate::CHALLENGE_PERIOD + 1);
         client.milestone_payout(&grant_id, &milestone_idx, &owner);
 
         let events = env.events().all();
@@ -5264,7 +5269,7 @@ mod tests {
 
         let mut reviewers = Vec::new(&env);
         reviewers.push_back(reviewer.clone());
-        
+
         let initial_time = 1000;
         env.ledger().set_timestamp(initial_time);
 
@@ -5276,7 +5281,7 @@ mod tests {
             token_id.clone(),
             reviewers,
         );
-        
+
         client.grant_fund(&grant_id, &funder, &100, &None);
 
         create_milestone(
@@ -5297,7 +5302,12 @@ mod tests {
 
         // Funder challenges the milestone within the period
         env.ledger().set_timestamp(initial_time + 100);
-        client.milestone_challenge(&grant_id, &milestone_idx, &funder, &String::from_str(&env, "Fraud suspected"));
+        client.milestone_challenge(
+            &grant_id,
+            &milestone_idx,
+            &funder,
+            &String::from_str(&env, "Fraud suspected"),
+        );
 
         env.as_contract(&contract_id, || {
             let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
@@ -5311,20 +5321,22 @@ mod tests {
 
         env.as_contract(&contract_id, || {
             let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
-            assert_eq!(updated_milestone.state, MilestoneState::AwaitingPayout); // Returned to awaiting payout
+            assert_eq!(updated_milestone.state, MilestoneState::AwaitingPayout);
+            // Returned to awaiting payout
         });
-        
+
         let new_time = env.ledger().timestamp();
         // Skip the new challenge period completely
-        env.ledger().set_timestamp(new_time + crate::CHALLENGE_PERIOD + 1);
-        
+        env.ledger()
+            .set_timestamp(new_time + crate::CHALLENGE_PERIOD + 1);
+
         client.milestone_payout(&grant_id, &milestone_idx, &owner);
 
         env.as_contract(&contract_id, || {
             let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
             assert_eq!(updated_milestone.state, MilestoneState::Paid);
         });
-        
+
         let token_client = soroban_sdk::token::Client::new(&env, &token_id);
         assert_eq!(token_client.balance(&owner), 100);
     }

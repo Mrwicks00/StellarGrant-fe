@@ -1111,9 +1111,12 @@ impl StellarGrantsContract {
         // Mark all approved or awaiting payout milestones as paid
         for milestone_idx in 0..grant.total_milestones {
             if let Some(mut milestone) = Storage::get_milestone(env, grant_id, milestone_idx) {
-                if milestone.state == MilestoneState::Approved || milestone.state == MilestoneState::AwaitingPayout {
+                if milestone.state == MilestoneState::Approved
+                    || milestone.state == MilestoneState::AwaitingPayout
+                {
                     if milestone.state == MilestoneState::AwaitingPayout {
-                        if env.ledger().timestamp() < milestone.status_updated_at + CHALLENGE_PERIOD {
+                        if env.ledger().timestamp() < milestone.status_updated_at + CHALLENGE_PERIOD
+                        {
                             return Err(ContractError::DeadlinePassed); // Must wait until challenge period elapses
                         }
                     }
@@ -1407,7 +1410,9 @@ impl StellarGrantsContract {
         let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
             .ok_or(ContractError::MilestoneNotFound)?;
 
-        if milestone.state != MilestoneState::Disputed && milestone.state != MilestoneState::Challenged {
+        if milestone.state != MilestoneState::Disputed
+            && milestone.state != MilestoneState::Challenged
+        {
             return Err(ContractError::InvalidState);
         }
 
@@ -2225,15 +2230,19 @@ impl StellarGrantsContract {
         caller.require_auth();
         assert_not_paused(&env)?;
         reentrancy::with_non_reentrant(&env, || {
-            let mut grant = Storage::get_grant(&env, grant_id).ok_or(ContractError::GrantNotFound)?;
+            let mut grant =
+                Storage::get_grant(&env, grant_id).ok_or(ContractError::GrantNotFound)?;
             if grant.status != GrantStatus::Active {
                 return Err(ContractError::InvalidState);
             }
 
-            let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx).ok_or(ContractError::MilestoneNotFound)?;
+            let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .ok_or(ContractError::MilestoneNotFound)?;
 
             // In older flows resolving dispute might set state to Approved, accept both
-            if milestone.state != MilestoneState::AwaitingPayout && milestone.state != MilestoneState::Approved {
+            if milestone.state != MilestoneState::AwaitingPayout
+                && milestone.state != MilestoneState::Approved
+            {
                 return Err(ContractError::InvalidState);
             }
 
@@ -2276,7 +2285,10 @@ impl StellarGrantsContract {
             // Update contributor reputation when paid
             if payout_amount > 0 {
                 if let Some(mut profile) = Storage::get_contributor(&env, grant.owner.clone()) {
-                    profile.total_earned = profile.total_earned.checked_add(payout_amount).ok_or(ContractError::InvalidInput)?;
+                    profile.total_earned = profile
+                        .total_earned
+                        .checked_add(payout_amount)
+                        .ok_or(ContractError::InvalidInput)?;
                     Storage::set_contributor(&env, grant.owner.clone(), &profile);
                 }
             }
@@ -2313,7 +2325,8 @@ impl StellarGrantsContract {
             return Err(ContractError::Unauthorized);
         }
 
-        let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx).ok_or(ContractError::MilestoneNotFound)?;
+        let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+            .ok_or(ContractError::MilestoneNotFound)?;
 
         if milestone.state != MilestoneState::AwaitingPayout {
             return Err(ContractError::InvalidState);
