@@ -84,6 +84,10 @@ pub enum MilestoneState {
     Resolved = 6,
     /// Open for community upvotes / comments before reviewer voting begins.
     CommunityReview = 7,
+    /// Quorum reached, but payment is delayed by a challenge period.
+    AwaitingPayout = 8,
+    /// An AwaitingPayout milestone was challenged by a funder.
+    Challenged = 9,
 }
 
 #[contracttype]

@@ -24,6 +24,9 @@ use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, String, V
 /// submission before official reviewer voting is allowed.
 pub const COMMUNITY_REVIEW_PERIOD: u64 = 3 * 24 * 60 * 60;
 
+/// Challenge period (48 hours in seconds) after approval during which the payout is suspended and can be challenged.
+pub const CHALLENGE_PERIOD: u64 = 48 * 60 * 60;
+
 /// Grace period (7 days in seconds) applied when a cancellation is requested
 /// while one or more milestones are still in a submitted/review state.
 pub const CANCEL_GRACE_PERIOD: u64 = 7 * 24 * 60 * 60;
@@ -54,6 +57,7 @@ impl StellarGrantsContract {
         if milestone.state != MilestoneState::Submitted
             && milestone.state != MilestoneState::Approved
             && milestone.state != MilestoneState::Paid
+            && milestone.state != MilestoneState::AwaitingPayout
         {
             return Err(ContractError::InvalidState);
         }
@@ -1023,6 +1027,7 @@ impl StellarGrantsContract {
         for milestone_idx in 0..total_milestones {
             if let Some(milestone) = Storage::get_milestone(env, grant_id, milestone_idx) {
                 if milestone.state != MilestoneState::Approved
+                    && milestone.state != MilestoneState::AwaitingPayout
                     && milestone.state != MilestoneState::Paid
                 {
                     return Err(ContractError::NotAllMilestonesApproved);
@@ -1103,10 +1108,15 @@ impl StellarGrantsContract {
             }
         }
 
-        // Mark all approved milestones as paid
+        // Mark all approved or awaiting payout milestones as paid
         for milestone_idx in 0..grant.total_milestones {
             if let Some(mut milestone) = Storage::get_milestone(env, grant_id, milestone_idx) {
-                if milestone.state == MilestoneState::Approved {
+                if milestone.state == MilestoneState::Approved || milestone.state == MilestoneState::AwaitingPayout {
+                    if milestone.state == MilestoneState::AwaitingPayout {
+                        if env.ledger().timestamp() < milestone.status_updated_at + CHALLENGE_PERIOD {
+                            return Err(ContractError::DeadlinePassed); // Must wait until challenge period elapses
+                        }
+                    }
                     milestone.state = MilestoneState::Paid;
                     milestone.status_updated_at = env.ledger().timestamp();
                     Storage::set_milestone(env, grant_id, milestone_idx, &milestone);
@@ -1252,36 +1262,16 @@ impl StellarGrantsContract {
                 }
             }
 
-            // ----- Automatic payout on quorum -----
-            let payout_amount = milestone.amount;
-
-            // Transfer milestone amount from contract escrow to grant owner
-            let token_client = token::Client::new(&env, &grant.token);
-            token_client.transfer(
-                &env.current_contract_address(),
-                &grant.owner,
-                &payout_amount,
-            );
-
-            // Update escrow accounting
-            grant.escrow_balance = grant
-                .escrow_balance
-                .checked_sub(payout_amount)
-                .ok_or(ContractError::InvalidInput)?;
-            grant.milestones_paid_out = grant
-                .milestones_paid_out
-                .checked_add(1)
-                .ok_or(ContractError::InvalidInput)?;
-            Storage::set_grant(&env, grant_id, &grant);
-
-            // Transition milestone directly to Paid
-            milestone.state = MilestoneState::Paid;
+            // ----- Delay payout until challenge period is over -----
+            milestone.state = MilestoneState::AwaitingPayout;
             milestone.status_updated_at = env.ledger().timestamp();
 
-            Events::milestone_status_changed(&env, grant_id, milestone_idx, MilestoneState::Paid);
-
-            // Emit dedicated MilestonePaid event for off-chain indexers
-            Events::emit_milestone_paid(&env, grant_id, milestone_idx, payout_amount);
+            Events::milestone_status_changed(
+                &env,
+                grant_id,
+                milestone_idx,
+                MilestoneState::AwaitingPayout,
+            );
         }
 
         Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
@@ -1417,15 +1407,24 @@ impl StellarGrantsContract {
         let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
             .ok_or(ContractError::MilestoneNotFound)?;
 
-        if milestone.state != MilestoneState::Disputed {
+        if milestone.state != MilestoneState::Disputed && milestone.state != MilestoneState::Challenged {
             return Err(ContractError::InvalidState);
         }
 
-        milestone.state = if approve {
-            MilestoneState::Approved
+        if milestone.state == MilestoneState::Disputed {
+            milestone.state = if approve {
+                MilestoneState::Approved
+            } else {
+                MilestoneState::Rejected
+            };
         } else {
-            MilestoneState::Rejected
-        };
+            // Milestone is Challenged
+            milestone.state = if approve {
+                MilestoneState::AwaitingPayout // Owner wins, resume to AwaitingPayout
+            } else {
+                MilestoneState::Rejected // Funder wins, reject the milestone
+            };
+        }
         milestone.status_updated_at = env.ledger().timestamp();
         Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
 
@@ -2213,6 +2212,121 @@ impl StellarGrantsContract {
         }
 
         Storage::remove_blacklisted(&env, &target);
+        Ok(())
+    }
+
+    /// Allows invoking the payout from an AwaitingPayout milestone once the challenge period elapses.
+    pub fn milestone_payout(
+        env: Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        caller: Address,
+    ) -> Result<(), ContractError> {
+        caller.require_auth();
+        assert_not_paused(&env)?;
+        reentrancy::with_non_reentrant(&env, || {
+            let mut grant = Storage::get_grant(&env, grant_id).ok_or(ContractError::GrantNotFound)?;
+            if grant.status != GrantStatus::Active {
+                return Err(ContractError::InvalidState);
+            }
+
+            let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx).ok_or(ContractError::MilestoneNotFound)?;
+
+            // In older flows resolving dispute might set state to Approved, accept both
+            if milestone.state != MilestoneState::AwaitingPayout && milestone.state != MilestoneState::Approved {
+                return Err(ContractError::InvalidState);
+            }
+
+            if milestone.state == MilestoneState::AwaitingPayout {
+                if env.ledger().timestamp() < milestone.status_updated_at + CHALLENGE_PERIOD {
+                    return Err(ContractError::DeadlinePassed);
+                }
+            }
+
+            let payout_amount = milestone.amount;
+
+            // Transfer milestone amount from contract escrow to grant owner
+            let token_client = token::Client::new(&env, &grant.token);
+            token_client.transfer(
+                &env.current_contract_address(),
+                &grant.owner,
+                &payout_amount,
+            );
+
+            // Update escrow accounting
+            grant.escrow_balance = grant
+                .escrow_balance
+                .checked_sub(payout_amount)
+                .ok_or(ContractError::InvalidInput)?;
+            grant.milestones_paid_out = grant
+                .milestones_paid_out
+                .checked_add(1)
+                .ok_or(ContractError::InvalidInput)?;
+            Storage::set_grant(&env, grant_id, &grant);
+
+            milestone.state = MilestoneState::Paid;
+            milestone.status_updated_at = env.ledger().timestamp();
+
+            Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
+
+            Events::milestone_status_changed(&env, grant_id, milestone_idx, MilestoneState::Paid);
+            Events::emit_milestone_paid(&env, grant_id, milestone_idx, payout_amount);
+            Events::emit_payout_executed(&env, grant_id, grant.owner.clone(), payout_amount);
+
+            // Update contributor reputation when paid
+            if payout_amount > 0 {
+                if let Some(mut profile) = Storage::get_contributor(&env, grant.owner.clone()) {
+                    profile.total_earned = profile.total_earned.checked_add(payout_amount).ok_or(ContractError::InvalidInput)?;
+                    Storage::set_contributor(&env, grant.owner.clone(), &profile);
+                }
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Allows a funder to challenge a milestone during its challenge period.
+    pub fn milestone_challenge(
+        env: Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        funder: Address,
+        reason: String,
+    ) -> Result<(), ContractError> {
+        funder.require_auth();
+        assert_not_paused(&env)?;
+
+        let grant = Storage::get_grant(&env, grant_id).ok_or(ContractError::GrantNotFound)?;
+        if grant.status != GrantStatus::Active {
+            return Err(ContractError::InvalidState);
+        }
+
+        let mut is_funder = false;
+        for i in 0..grant.funders.len() {
+            let f = grant.funders.get(i).unwrap();
+            if f.funder == funder {
+                is_funder = true;
+                break;
+            }
+        }
+        if !is_funder {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx).ok_or(ContractError::MilestoneNotFound)?;
+
+        if milestone.state != MilestoneState::AwaitingPayout {
+            return Err(ContractError::InvalidState);
+        }
+
+        milestone.state = MilestoneState::Challenged;
+        milestone.status_updated_at = env.ledger().timestamp();
+
+        Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
+
+        Events::milestone_status_changed(&env, grant_id, milestone_idx, MilestoneState::Challenged);
+        Events::milestone_challenged(&env, grant_id, milestone_idx, funder, reason);
+
         Ok(())
     }
 }

@@ -29,6 +29,17 @@ pub struct MilestoneRejected {
 
 #[contractevent]
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MilestoneChallenged {
+    pub event_version: u32,
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub funder: Address,
+    pub reason: String,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MilestoneStatusChanged {
     pub event_version: u32,
     pub grant_id: u64,
@@ -485,6 +496,24 @@ impl Events {
             grant_id,
             milestone_idx,
             reviewer,
+            reason,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn milestone_challenged(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        funder: Address,
+        reason: String,
+    ) {
+        let event = MilestoneChallenged {
+            event_version: EVENT_VERSION,
+            grant_id,
+            milestone_idx,
+            funder,
             reason,
             timestamp: env.ledger().timestamp(),
         };
