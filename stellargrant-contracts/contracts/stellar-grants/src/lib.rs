@@ -73,7 +73,7 @@ impl StellarGrantsContract {
             }
             let fee_token = milestone.payout_token.clone();
             let token_client = token::Client::new(&env, &fee_token);
-            token_client.transfer(&caller, &env.current_contract_address(), &fee_amount);
+            token_client.transfer(&caller, env.current_contract_address(), &fee_amount);
 
             Storage::set_milestone_dispute_info(
                 &env,
@@ -612,7 +612,7 @@ impl StellarGrantsContract {
         quorum: u32,
         milestone_deadlines: Option<soroban_sdk::Vec<u64>>,
         min_funding: i128,
-        hard_cap: i128,
+        _hard_cap: i128,
         tags: soroban_sdk::Vec<String>,
     ) -> Result<u64, ContractError> {
         owner.require_auth();
