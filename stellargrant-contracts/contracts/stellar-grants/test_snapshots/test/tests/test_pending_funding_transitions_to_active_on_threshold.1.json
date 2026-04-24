@@ -348,14 +348,6 @@
                   },
                   {
                     "key": {
-                      "symbol": "primary_token"
-                    },
-                    "val": {
-                      "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "reason"
                     },
                     "val": "void"
@@ -390,6 +382,14 @@
                     },
                     "val": {
                       "string": "Pending Grant"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "token_address"
+                    },
+                    "val": {
+                      "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
                     }
                   },
                   {

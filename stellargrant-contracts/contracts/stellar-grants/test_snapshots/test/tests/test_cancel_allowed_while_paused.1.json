@@ -277,14 +277,6 @@
                   },
                   {
                     "key": {
-                      "symbol": "primary_token"
-                    },
-                    "val": {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "reason"
                     },
                     "val": {
@@ -321,6 +313,14 @@
                     },
                     "val": {
                       "string": "Emergency"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "token_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                     }
                   },
                   {

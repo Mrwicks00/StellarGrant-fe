@@ -369,14 +369,6 @@
                   },
                   {
                     "key": {
-                      "symbol": "primary_token"
-                    },
-                    "val": {
-                      "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "reason"
                     },
                     "val": {
@@ -413,6 +405,14 @@
                     },
                     "val": {
                       "string": "Admin Cancel"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "token_address"
+                    },
+                    "val": {
+                      "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
                     }
                   },
                   {

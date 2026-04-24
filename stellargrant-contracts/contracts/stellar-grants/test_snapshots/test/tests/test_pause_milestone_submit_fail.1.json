@@ -323,14 +323,6 @@
                   },
                   {
                     "key": {
-                      "symbol": "primary_token"
-                    },
-                    "val": {
-                      "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "reason"
                     },
                     "val": "void"
@@ -369,6 +361,14 @@
                     },
                     "val": {
                       "string": "Grant"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "token_address"
+                    },
+                    "val": {
+                      "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
                     }
                   },
                   {

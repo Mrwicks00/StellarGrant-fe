@@ -1001,14 +1001,6 @@
                   },
                   {
                     "key": {
-                      "symbol": "primary_token"
-                    },
-                    "val": {
-                      "address": "CDS3FDGQ4JA2V3F26Y4BMWWJEC5TT26RJBN7KIQKUMVO2MAOCMDTSZ7A"
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "reason"
                     },
                     "val": "void"
@@ -1047,6 +1039,14 @@
                     },
                     "val": {
                       "string": "G"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "token_address"
+                    },
+                    "val": {
+                      "address": "CDS3FDGQ4JA2V3F26Y4BMWWJEC5TT26RJBN7KIQKUMVO2MAOCMDTSZ7A"
                     }
                   },
                   {

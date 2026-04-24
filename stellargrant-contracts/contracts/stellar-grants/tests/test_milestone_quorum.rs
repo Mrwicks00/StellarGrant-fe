@@ -137,22 +137,26 @@ fn test_milestone_double_voting_panics() {
     use soroban_sdk::{testutils::Address as TestAddress, Address, Env, String, Vec};
     use stellar_grants::{StellarGrantsContractClient, COMMUNITY_REVIEW_PERIOD};
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, stellar_grants::StellarGrantsContract);
     let client = StellarGrantsContractClient::new(&env, &contract_id);
     let owner = <Address as TestAddress>::generate(&env);
-    let token = <Address as TestAddress>::generate(&env);
+    let admin = <Address as TestAddress>::generate(&env);
+    let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+    let token_id = token_contract.address();
+    let token_admin = soroban_sdk::token::StellarAssetClient::new(&env, &token_id);
+    token_admin.mint(&contract_id, &1000);
     let mut reviewers = Vec::new(&env);
     reviewers.push_back(<Address as TestAddress>::generate(&env));
     reviewers.push_back(<Address as TestAddress>::generate(&env));
     reviewers.push_back(<Address as TestAddress>::generate(&env));
     let quorum = 2u32;
-    env.mock_all_auths();
 
     let grant_id = client.grant_create(
         &owner,
         &String::from_str(&env, "Test Grant"),
         &String::from_str(&env, "Testing"),
-        &token,
+        &token_id,
         &100,
         &10,
         &3,

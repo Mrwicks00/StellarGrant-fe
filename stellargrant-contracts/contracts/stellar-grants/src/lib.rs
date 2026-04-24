@@ -813,7 +813,7 @@ impl StellarGrantsContract {
         owner: Address,
         title: String,
         description: String,
-        token: Address,
+        token_address: Address,
         total_amount: i128,
         milestone_amount: i128,
         num_milestones: u32,
@@ -837,6 +837,8 @@ impl StellarGrantsContract {
                 return Err(ContractError::InvalidInput);
             }
         }
+
+        ensure_token_interface(&env, &token_address)?;
 
         if total_amount <= 0 || milestone_amount <= 0 {
             return Err(ContractError::InvalidInput);
@@ -882,7 +884,7 @@ impl StellarGrantsContract {
             owner: owner.clone(),
             title: title.clone(),
             description,
-            primary_token: token.clone(),
+            token_address: token_address.clone(),
             total_amount,
             milestone_amount,
             reviewers,
@@ -927,7 +929,7 @@ impl StellarGrantsContract {
             let mut milestone = Milestone {
                 description: String::from_str(&env, ""),
                 amount: milestone_amount,
-                payout_token: token.clone(), // Default to primary token
+                payout_token: token_address.clone(), // Default to grant token
                 state: MilestoneState::Pending,
                 votes: soroban_sdk::Map::new(&env),
                 reasons: soroban_sdk::Map::new(&env),
@@ -994,7 +996,7 @@ impl StellarGrantsContract {
         owner: Address,
         title: String,
         description: String,
-        token: Address,
+        token_address: Address,
         total_amount: i128,
         milestone_amount: i128,
         num_milestones: u32,
@@ -1007,7 +1009,7 @@ impl StellarGrantsContract {
             owner,
             title,
             description,
-            token,
+            token_address,
             total_amount,
             milestone_amount,
             num_milestones,
@@ -1027,7 +1029,7 @@ impl StellarGrantsContract {
         owner: Address,
         title: String,
         description: String,
-        token: Address,
+        token_address: Address,
         total_amount: i128,
         milestone_amount: i128,
         num_milestones: u32,
@@ -1044,7 +1046,7 @@ impl StellarGrantsContract {
             owner,
             title,
             description,
-            token,
+            token_address,
             total_amount,
             milestone_amount,
             num_milestones,
@@ -1393,13 +1395,13 @@ impl StellarGrantsContract {
             Self::compute_total_paid_if_quorum_ready(env, grant_id, grant.total_milestones())?;
         let escrow_bal = grant
             .escrow_balances
-            .get(grant.primary_token.clone())
+            .get(grant.token_address.clone())
             .unwrap_or(0);
         if escrow_bal < total_paid {
             return Err(ContractError::InvalidInput);
         }
         let remaining_balance = escrow_bal - total_paid;
-        let token_client = token::Client::new(env, &grant.primary_token);
+        let token_client = token::Client::new(env, &grant.token_address);
 
         if total_paid > 0 {
             token_client.transfer(&env.current_contract_address(), &grant.owner, &total_paid);
@@ -1523,7 +1525,7 @@ impl StellarGrantsContract {
             env,
             grant_id,
             grant.owner.clone(),
-            grant.primary_token.clone(),
+            grant.token_address.clone(),
             total_paid,
             None,
         );
@@ -1916,7 +1918,7 @@ impl StellarGrantsContract {
             let new_balance = current_balance
                 .checked_add(amount)
                 .ok_or(ContractError::InvalidInput)?;
-            if grant.hard_cap > 0 && token == grant.primary_token && new_balance > grant.hard_cap {
+            if grant.hard_cap > 0 && token == grant.token_address && new_balance > grant.hard_cap {
                 return Err(ContractError::CapReached);
             }
 
@@ -1948,7 +1950,7 @@ impl StellarGrantsContract {
             // Auto-transition PendingFunding → Active once threshold is met (based on primary token)
             let primary_balance = grant
                 .escrow_balances
-                .get(grant.primary_token.clone())
+                .get(grant.token_address.clone())
                 .unwrap_or(0);
             if grant.status() == GrantStatus::PendingFunding && primary_balance >= grant.min_funding
             {
@@ -2272,7 +2274,7 @@ impl StellarGrantsContract {
             }
 
             let contract_addr = env.current_contract_address();
-            let client = token::Client::new(&env, &grant.primary_token);
+            let client = token::Client::new(&env, &grant.token_address);
             client.transfer(&reviewer, &contract_addr, &amount);
 
             let current = Storage::get_reviewer_stake(&env, grant_id, &reviewer);
@@ -2298,7 +2300,7 @@ impl StellarGrantsContract {
             }
 
             let treasury = Storage::get_treasury(&env).ok_or(ContractError::InvalidInput)?;
-            let client = token::Client::new(&env, &grant.primary_token);
+            let client = token::Client::new(&env, &grant.token_address);
             client.transfer(&env.current_contract_address(), &treasury, &stake);
 
             Storage::set_reviewer_stake(&env, grant_id, &reviewer, 0);
@@ -2320,7 +2322,7 @@ impl StellarGrantsContract {
                 return Err(ContractError::StakeNotFound);
             }
 
-            let client = token::Client::new(&env, &grant.primary_token);
+            let client = token::Client::new(&env, &grant.token_address);
             client.transfer(&env.current_contract_address(), &reviewer, &stake);
 
             Storage::set_reviewer_stake(&env, grant_id, &reviewer, 0);
@@ -2389,7 +2391,7 @@ impl StellarGrantsContract {
                     .checked_add(amount)
                     .ok_or(ContractError::InvalidInput)?;
                 if grant.hard_cap > 0
-                    && token == grant.primary_token
+                    && token == grant.token_address
                     && new_balance > grant.hard_cap
                 {
                     return Err(ContractError::CapReached);
@@ -2417,7 +2419,7 @@ impl StellarGrantsContract {
                 // Auto-activate if threshold met
                 let primary_balance = grant
                     .escrow_balances
-                    .get(grant.primary_token.clone())
+                    .get(grant.token_address.clone())
                     .unwrap_or(0);
                 if grant.status() == GrantStatus::PendingFunding
                     && primary_balance >= grant.min_funding
@@ -2914,6 +2916,16 @@ fn apply_milestone_submission(
     Storage::set_milestone(env, grant_id, milestone_idx, &milestone);
     Events::emit_milestone_submitted(env, grant_id, milestone_idx, description);
 
+    Ok(())
+}
+
+/// Verifies `token_address` exposes the Soroban standard token interface (SEP-41), same surface as `token::Client`.
+fn ensure_token_interface(env: &Env, token_address: &Address) -> Result<(), ContractError> {
+    let client = token::Client::new(env, token_address);
+    let _decimals: u32 = client
+        .try_decimals()
+        .map_err(|_| ContractError::InvalidTokenInterface)?
+        .map_err(|_| ContractError::InvalidTokenInterface)?;
     Ok(())
 }
 

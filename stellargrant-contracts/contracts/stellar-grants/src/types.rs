@@ -46,6 +46,8 @@ pub enum ContractError {
     RoleNotAssigned = 41,
     DeadlineNotSet = 42,
     ExpiryNotReached = 43,
+    /// `token_address` is missing SEP-41 / Soroban token interface (e.g. no `decimals`).
+    InvalidTokenInterface = 44,
 }
 
 #[contracttype]
@@ -345,7 +347,8 @@ pub struct Grant {
     pub owner: Address,
     pub title: String,
     pub description: String,
-    pub primary_token: Address,
+    /// Soroban token / Stellar Asset Contract implementing SEP-41 (`token::Client`).
+    pub token_address: Address,
     pub total_amount: i128,
     pub milestone_amount: i128,
     pub reviewers: Vec<Address>,
@@ -368,7 +371,7 @@ impl Grant {
         owner: Address,
         title: String,
         description: String,
-        primary_token: Address,
+        token_address: Address,
         total_amount: i128,
         milestone_amount: i128,
         reviewers: Vec<Address>,
@@ -391,7 +394,7 @@ impl Grant {
             owner,
             title,
             description,
-            primary_token,
+            token_address,
             total_amount,
             milestone_amount,
             reviewers,
@@ -419,7 +422,7 @@ impl Grant {
             if self.min_funding > 0 {
                 let primary_balance = self
                     .escrow_balances
-                    .get(self.primary_token.clone())
+                    .get(self.token_address.clone())
                     .unwrap_or(0);
                 if primary_balance < self.min_funding {
                     return GrantStatus::PendingFunding;
