@@ -87,7 +87,11 @@
                 },
                 {
                   "i128": "300"
-                }
+                },
+                {
+                  "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                },
+                "void"
               ]
             }
           },
@@ -133,7 +137,11 @@
                 },
                 {
                   "i128": "400"
-                }
+                },
+                {
+                  "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                },
+                "void"
               ]
             }
           },
@@ -237,6 +245,12 @@
                 "map": [
                   {
                     "key": {
+                      "symbol": "cancellation_requested_at"
+                    },
+                    "val": "void"
+                  },
+                  {
+                    "key": {
                       "symbol": "description"
                     },
                     "val": {
@@ -245,10 +259,19 @@
                   },
                   {
                     "key": {
-                      "symbol": "escrow_balance"
+                      "symbol": "escrow_balances"
                     },
                     "val": {
-                      "i128": "700"
+                      "map": [
+                        {
+                          "key": {
+                            "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                          },
+                          "val": {
+                            "i128": "700"
+                          }
+                        }
+                      ]
                     }
                   },
                   {
@@ -274,6 +297,14 @@
                               "val": {
                                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "token"
+                              },
+                              "val": {
+                                "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                              }
                             }
                           ]
                         },
@@ -294,10 +325,26 @@
                               "val": {
                                 "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                               }
+                            },
+                            {
+                              "key": {
+                                "symbol": "token"
+                              },
+                              "val": {
+                                "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                              }
                             }
                           ]
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "hard_cap"
+                    },
+                    "val": {
+                      "i128": "0"
                     }
                   },
                   {
@@ -310,6 +357,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "last_heartbeat"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "milestone_amount"
                     },
                     "val": {
@@ -318,10 +373,10 @@
                   },
                   {
                     "key": {
-                      "symbol": "milestones_paid_out"
+                      "symbol": "min_funding"
                     },
                     "val": {
-                      "u32": 0
+                      "i128": "0"
                     }
                   },
                   {
@@ -330,6 +385,14 @@
                     },
                     "val": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "packed_config"
+                    },
+                    "val": {
+                      "u128": "0"
                     }
                   },
                   {
@@ -348,10 +411,10 @@
                   },
                   {
                     "key": {
-                      "symbol": "status"
+                      "symbol": "tags"
                     },
                     "val": {
-                      "u32": 1
+                      "vec": []
                     }
                   },
                   {
@@ -385,14 +448,6 @@
                     "val": {
                       "i128": "1000"
                     }
-                  },
-                  {
-                    "key": {
-                      "symbol": "total_milestones"
-                    },
-                    "val": {
-                      "u32": 1
-                    }
                   }
                 ]
               }
@@ -400,7 +455,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 4095
+        "live_until": 1000000
       },
       {
         "entry": {

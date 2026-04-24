@@ -44,6 +44,12 @@
                         },
                         {
                           "key": {
+                            "symbol": "payout_token"
+                          },
+                          "val": "void"
+                        },
+                        {
+                          "key": {
                             "symbol": "proof"
                           },
                           "val": {
@@ -72,6 +78,12 @@
                         },
                         {
                           "key": {
+                            "symbol": "payout_token"
+                          },
+                          "val": "void"
+                        },
+                        {
+                          "key": {
                             "symbol": "proof"
                           },
                           "val": {
@@ -97,6 +109,12 @@
                           "val": {
                             "u32": 2
                           }
+                        },
+                        {
+                          "key": {
+                            "symbol": "payout_token"
+                          },
+                          "val": "void"
                         },
                         {
                           "key": {
@@ -153,6 +171,12 @@
                 "map": [
                   {
                     "key": {
+                      "symbol": "cancellation_requested_at"
+                    },
+                    "val": "void"
+                  },
+                  {
+                    "key": {
                       "symbol": "description"
                     },
                     "val": {
@@ -161,10 +185,19 @@
                   },
                   {
                     "key": {
-                      "symbol": "escrow_balance"
+                      "symbol": "escrow_balances"
                     },
                     "val": {
-                      "i128": "1000"
+                      "map": [
+                        {
+                          "key": {
+                            "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                          },
+                          "val": {
+                            "i128": "1000"
+                          }
+                        }
+                      ]
                     }
                   },
                   {
@@ -177,10 +210,26 @@
                   },
                   {
                     "key": {
+                      "symbol": "hard_cap"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "id"
                     },
                     "val": {
                       "u64": "1"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "last_heartbeat"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -193,10 +242,10 @@
                   },
                   {
                     "key": {
-                      "symbol": "milestones_paid_out"
+                      "symbol": "min_funding"
                     },
                     "val": {
-                      "u32": 0
+                      "i128": "0"
                     }
                   },
                   {
@@ -205,6 +254,14 @@
                     },
                     "val": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "packed_config"
+                    },
+                    "val": {
+                      "u128": "55340232221128654849"
                     }
                   },
                   {
@@ -223,10 +280,10 @@
                   },
                   {
                     "key": {
-                      "symbol": "status"
+                      "symbol": "tags"
                     },
                     "val": {
-                      "u32": 1
+                      "vec": []
                     }
                   },
                   {
@@ -260,14 +317,6 @@
                     "val": {
                       "i128": "1000"
                     }
-                  },
-                  {
-                    "key": {
-                      "symbol": "total_milestones"
-                    },
-                    "val": {
-                      "u32": 3
-                    }
                   }
                 ]
               }
@@ -275,7 +324,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 4095
+        "live_until": 1000000
       },
       {
         "entry": {
@@ -305,15 +354,23 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "0"
+                      "i128": "333"
                     }
                   },
                   {
                     "key": {
-                      "symbol": "approvals"
+                      "symbol": "community_comments"
                     },
                     "val": {
-                      "u32": 0
+                      "map": []
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "deadline_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -326,10 +383,18 @@
                   },
                   {
                     "key": {
-                      "symbol": "idx"
+                      "symbol": "packed_stats"
                     },
                     "val": {
-                      "u32": 0
+                      "u128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "payout_token"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     }
                   },
                   {
@@ -350,18 +415,10 @@
                   },
                   {
                     "key": {
-                      "symbol": "rejections"
-                    },
-                    "val": {
-                      "u32": 0
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "state"
                     },
                     "val": {
-                      "u32": 1
+                      "u32": 7
                     }
                   },
                   {
@@ -394,7 +451,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 4095
+        "live_until": 1000000
       },
       {
         "entry": {
@@ -424,15 +481,23 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "0"
+                      "i128": "333"
                     }
                   },
                   {
                     "key": {
-                      "symbol": "approvals"
+                      "symbol": "community_comments"
                     },
                     "val": {
-                      "u32": 0
+                      "map": []
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "deadline_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -445,10 +510,18 @@
                   },
                   {
                     "key": {
-                      "symbol": "idx"
+                      "symbol": "packed_stats"
                     },
                     "val": {
-                      "u32": 1
+                      "u128": "1"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "payout_token"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     }
                   },
                   {
@@ -469,18 +542,10 @@
                   },
                   {
                     "key": {
-                      "symbol": "rejections"
-                    },
-                    "val": {
-                      "u32": 0
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "state"
                     },
                     "val": {
-                      "u32": 1
+                      "u32": 7
                     }
                   },
                   {
@@ -513,7 +578,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 4095
+        "live_until": 1000000
       },
       {
         "entry": {
@@ -543,15 +608,23 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "0"
+                      "i128": "333"
                     }
                   },
                   {
                     "key": {
-                      "symbol": "approvals"
+                      "symbol": "community_comments"
                     },
                     "val": {
-                      "u32": 0
+                      "map": []
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "deadline_timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -564,10 +637,18 @@
                   },
                   {
                     "key": {
-                      "symbol": "idx"
+                      "symbol": "packed_stats"
                     },
                     "val": {
-                      "u32": 2
+                      "u128": "2"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "payout_token"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     }
                   },
                   {
@@ -588,18 +669,10 @@
                   },
                   {
                     "key": {
-                      "symbol": "rejections"
-                    },
-                    "val": {
-                      "u32": 0
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "state"
                     },
                     "val": {
-                      "u32": 1
+                      "u32": 7
                     }
                   },
                   {
@@ -632,7 +705,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 4095
+        "live_until": 1000000
       },
       {
         "entry": {
