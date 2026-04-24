@@ -1,4 +1,4 @@
-use crate::types::MilestoneState;
+use crate::types::{MilestoneState, Role};
 use soroban_sdk::{contractevent, Address, BytesN, Env, String, Vec};
 
 const EVENT_VERSION: u32 = 1;
@@ -136,11 +136,45 @@ pub struct FinalRefund {
 
 #[contractevent]
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpiredFundsClaimed {
+    pub event_version: u32,
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub caller: Address,
+    pub amount: i128,
+    pub token: Address,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContributorRegistered {
     pub event_version: u32,
     pub grant_id: u64,
     pub contributor: Address,
     pub name: String,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MilestoneExtensionRequested {
+    pub event_version: u32,
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub new_deadline: u64,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MilestoneExtensionApproved {
+    pub event_version: u32,
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub reviewer: Address,
+    pub approvals: u32,
+    pub quorum: u32,
     pub timestamp: u64,
 }
 
@@ -185,7 +219,7 @@ pub struct GrantCreated {
     pub owner: Address,
     pub title: String,
     pub total_amount: i128,
-    pub tags: Vec<String>,
+    pub tags: Vec<soroban_sdk::String>,
     pub timestamp: u64,
 }
 
@@ -309,6 +343,41 @@ impl Events {
         event.publish(env);
     }
 
+    pub fn emit_role_granted(env: &Env, sender: Address, account: Address, role: Role) {
+        let event = RoleGranted {
+            event_version: EVENT_VERSION,
+            grant_id: GLOBAL_EVENT_GRANT_ID,
+            role,
+            account,
+            sender,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn emit_role_revoked(env: &Env, sender: Address, account: Address, role: Role) {
+        let event = RoleRevoked {
+            event_version: EVENT_VERSION,
+            grant_id: GLOBAL_EVENT_GRANT_ID,
+            role,
+            account,
+            sender,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn emit_role_renounced(env: &Env, account: Address, role: Role) {
+        let event = RoleRenounced {
+            event_version: EVENT_VERSION,
+            grant_id: GLOBAL_EVENT_GRANT_ID,
+            role,
+            account,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
     pub fn emit_grant_cancelled(
         env: &Env,
         grant_id: u64,
@@ -383,6 +452,26 @@ impl Events {
         event.publish(env);
     }
 
+    pub fn emit_expired_funds_claimed(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        caller: Address,
+        amount: i128,
+        token: Address,
+    ) {
+        let event = ExpiredFundsClaimed {
+            event_version: EVENT_VERSION,
+            grant_id,
+            milestone_idx,
+            caller,
+            amount,
+            token,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
     pub fn emit_milestone_submitted(
         env: &Env,
         grant_id: u64,
@@ -425,7 +514,7 @@ impl Events {
         owner: Address,
         title: String,
         total_amount: i128,
-        tags: Vec<String>,
+        tags: Vec<soroban_sdk::String>,
     ) {
         let event = GrantCreated {
             event_version: EVENT_VERSION,
@@ -468,6 +557,42 @@ impl Events {
             grant_id,
             contributor,
             name,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn emit_milestone_extension_requested(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        new_deadline: u64,
+    ) {
+        let event = MilestoneExtensionRequested {
+            event_version: EVENT_VERSION,
+            grant_id,
+            milestone_idx,
+            new_deadline,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn emit_milestone_extension_approved(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        reviewer: Address,
+        approvals: u32,
+        quorum: u32,
+    ) {
+        let event = MilestoneExtensionApproved {
+            event_version: EVENT_VERSION,
+            grant_id,
+            milestone_idx,
+            reviewer,
+            approvals,
+            quorum,
             timestamp: env.ledger().timestamp(),
         };
         event.publish(env);
