@@ -30,6 +30,8 @@ pub enum ContractError {
     ReleaseNotReady = 23,
     GrantAlreadyReleased = 24,
     InsufficientReputation = 25,
+    /// `token_address` is missing SEP-41 / Soroban token interface (e.g. no `decimals`).
+    InvalidTokenInterface = 26,
 }
 
 #[contracttype]
@@ -117,7 +119,8 @@ pub struct Grant {
     pub owner: Address,
     pub title: String,
     pub description: String,
-    pub token: Address,
+    /// Soroban token / Stellar Asset Contract implementing SEP-41 (`token::Client`).
+    pub token_address: Address,
     pub status: GrantStatus,
     pub total_amount: i128,
     pub milestone_amount: i128,

@@ -163,7 +163,7 @@
                   },
                   {
                     "key": {
-                      "symbol": "token"
+                      "symbol": "token_address"
                     },
                     "val": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"

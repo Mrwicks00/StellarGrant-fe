@@ -135,7 +135,7 @@
                   },
                   {
                     "key": {
-                      "symbol": "token"
+                      "symbol": "token_address"
                     },
                     "val": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"

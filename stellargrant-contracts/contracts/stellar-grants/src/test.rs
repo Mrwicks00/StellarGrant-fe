@@ -142,12 +142,17 @@ mod tests {
         (client, admin, contract_id)
     }
 
+    /// Stellar Asset Contract in tests implements the same Soroban `token::Client` / SEP-41 surface as custom Soroban tokens.
+    fn register_sep41_token(env: &Env, issuer: Address) -> Address {
+        env.register_stellar_asset_contract_v2(issuer).address()
+    }
+
     fn create_grant(
         env: &Env,
         contract_id: &soroban_sdk::Address,
         grant_id: u64,
         owner: Address,
-        token: Address,
+        token_address: Address,
         reviewers: Vec<Address>,
     ) {
         env.as_contract(contract_id, || {
@@ -157,7 +162,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner,
-                token,
+                token_address,
                 status: GrantStatus::Active,
                 total_amount: 1000,
                 reviewers,
@@ -303,7 +308,7 @@ mod tests {
             description: String::from_str(&env, "Desc"),
             milestone_amount: 500,
             owner: owner.clone(),
-            token: token_id.clone(),
+            token_address: token_id.clone(),
             status: GrantStatus::Active,
             total_amount: total_funded,
             reviewers: Vec::new(&env),
@@ -367,7 +372,7 @@ mod tests {
             description: String::from_str(&env, "Desc"),
             milestone_amount: 500,
             owner: owner.clone(),
-            token: token.clone(),
+            token_address: token.clone(),
             status: GrantStatus::Completed,
             total_amount: 100,
             reviewers: Vec::new(&env),
@@ -421,7 +426,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner,
-                token: token_id.clone(),
+                token_address: token_id.clone(),
                 status: GrantStatus::Active,
                 total_amount: 500,
                 reviewers: Vec::new(&env),
@@ -459,7 +464,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner: owner.clone(),
-                token,
+                token_address: token,
                 status: GrantStatus::Active,
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
@@ -521,7 +526,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 50,
                 owner: owner.clone(),
-                token: token_id.clone(),
+                token_address: token_id.clone(),
                 status: GrantStatus::Active,
                 total_amount: 150,
                 reviewers: Vec::new(&env),
@@ -582,7 +587,7 @@ mod tests {
             description: String::from_str(&env, "Desc"),
             milestone_amount: 500,
             owner: owner.clone(),
-            token: token_id.clone(),
+            token_address: token_id.clone(),
             status: GrantStatus::Active,
             total_amount: total_funded,
             reviewers: Vec::new(&env),
@@ -659,7 +664,7 @@ mod tests {
             description: String::from_str(&env, "Desc"),
             milestone_amount: 500,
             owner: owner.clone(),
-            token: token.clone(),
+            token_address: token.clone(),
             status: GrantStatus::Active,
             total_amount: 1000,
             reviewers: Vec::new(&env),
@@ -733,7 +738,7 @@ mod tests {
             description: String::from_str(&env, "Desc"),
             milestone_amount: 500,
             owner: owner.clone(),
-            token: token_id.clone(),
+            token_address: token_id.clone(),
             status: GrantStatus::Active,
             total_amount: total_funded,
             reviewers: Vec::new(&env),
@@ -908,11 +913,11 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
 
-        let (client, _, _) = setup_test(&env);
+        let (client, admin, _) = setup_test(&env);
         let owner = Address::generate(&env);
         let signer = Address::generate(&env);
         let attacker = Address::generate(&env);
-        let token = Address::generate(&env);
+        let token_id = register_sep41_token(&env, admin.clone());
         let reviewers = Vec::new(&env);
         let mut multisig = Vec::new(&env);
         multisig.push_back(signer);
@@ -921,7 +926,7 @@ mod tests {
             &owner,
             &String::from_str(&env, "HS"),
             &String::from_str(&env, "Desc"),
-            &token,
+            &token_id,
             &1000,
             &500,
             &1,
@@ -950,7 +955,7 @@ mod tests {
             description: String::from_str(&env, "Desc"),
             milestone_amount: 500,
             owner: owner.clone(),
-            token: token_id.clone(),
+            token_address: token_id.clone(),
             status: GrantStatus::Active,
             total_amount: total_funded,
             reviewers: Vec::new(&env),
@@ -1074,9 +1079,9 @@ mod tests {
         let env = Env::default();
         env.mock_all_auths();
 
-        let (client, _, contract_id) = setup_test(&env);
+        let (client, admin, contract_id) = setup_test(&env);
         let owner = Address::generate(&env);
-        let token = Address::generate(&env);
+        let token_id = register_sep41_token(&env, admin.clone());
         let reviewers = Vec::new(&env);
 
         client.contributor_register(
@@ -1091,7 +1096,7 @@ mod tests {
             &owner,
             &String::from_str(&env, "Rep Gate"),
             &String::from_str(&env, "Desc"),
-            &token,
+            &token_id,
             &1000,
             &500,
             &2,
@@ -1192,7 +1197,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner: owner.clone(),
-                token,
+                token_address: token,
                 status: GrantStatus::Active,
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
@@ -1247,7 +1252,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 333,
                 owner: owner.clone(),
-                token,
+                token_address: token,
                 status: GrantStatus::Active,
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
@@ -1430,7 +1435,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner: owner.clone(),
-                token,
+                token_address: token,
                 status: GrantStatus::Completed, // Not Active
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
@@ -1480,7 +1485,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner: owner.clone(),
-                token: token_id.clone(),
+                token_address: token_id.clone(),
                 status: GrantStatus::Active,
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
@@ -1584,7 +1589,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner: owner.clone(),
-                token,
+                token_address: token,
                 status: GrantStatus::Active,
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
@@ -1630,7 +1635,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner,
-                token: token_id.clone(),
+                token_address: token_id.clone(),
                 status: GrantStatus::Active,
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
@@ -1683,7 +1688,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner,
-                token: token_id.clone(),
+                token_address: token_id.clone(),
                 status: GrantStatus::Active,
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
@@ -1733,7 +1738,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner,
-                token: token_contract.clone(),
+                token_address: token_contract.clone(),
                 status: GrantStatus::Active,
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
@@ -1778,7 +1783,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner,
-                token: token_contract.clone(),
+                token_address: token_contract.clone(),
                 status: GrantStatus::Active,
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
@@ -1827,7 +1832,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner,
-                token: token_contract.clone(),
+                token_address: token_contract.clone(),
                 status: GrantStatus::Active,
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
@@ -1867,7 +1872,7 @@ mod tests {
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner: owner.clone(),
-                token: token_id.clone(),
+                token_address: token_id.clone(),
                 status: GrantStatus::Active,
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
@@ -1897,9 +1902,9 @@ mod tests {
     #[test]
     fn test_grant_create_success() {
         let env = Env::default();
-        let (client, _, _) = setup_test(&env);
+        let (client, admin, _) = setup_test(&env);
         let owner = Address::generate(&env);
-        let token = Address::generate(&env);
+        let token_id = register_sep41_token(&env, admin.clone());
         let reviewers = Vec::new(&env);
         let title = String::from_str(&env, "New Grant");
         let description = String::from_str(&env, "Some desc");
@@ -1910,7 +1915,7 @@ mod tests {
             &owner,
             &title,
             &description,
-            &token,
+            &token_id,
             &1000i128, // total_amount
             &500i128,  // milestone_amount
             &2u32,     // num_milestones
@@ -1928,15 +1933,16 @@ mod tests {
             assert_eq!(grant.total_milestones, 2);
             assert_eq!(grant.status, GrantStatus::Active);
             assert_eq!(grant.escrow_balance, 0);
+            assert_eq!(grant.token_address, token_id);
         });
     }
 
     #[test]
     fn test_grant_create_invalid_amounts() {
         let env = Env::default();
-        let (client, _, _) = setup_test(&env);
+        let (client, admin, _) = setup_test(&env);
         let owner = Address::generate(&env);
-        let token = Address::generate(&env);
+        let token_id = register_sep41_token(&env, admin.clone());
         let reviewers = Vec::new(&env);
         let title = String::from_str(&env, "New Grant");
         let description = String::from_str(&env, "Some desc");
@@ -1948,7 +1954,7 @@ mod tests {
             &owner,
             &title,
             &description,
-            &token,
+            &token_id,
             &0i128,
             &500i128,
             &2u32,
@@ -1961,7 +1967,7 @@ mod tests {
             &owner,
             &title,
             &description,
-            &token,
+            &token_id,
             &1000i128,
             &-100i128,
             &2u32,
@@ -1973,9 +1979,9 @@ mod tests {
     #[test]
     fn test_grant_create_invalid_num_milestones() {
         let env = Env::default();
-        let (client, _, _) = setup_test(&env);
+        let (client, admin, _) = setup_test(&env);
         let owner = Address::generate(&env);
-        let token = Address::generate(&env);
+        let token_id = register_sep41_token(&env, admin.clone());
         let reviewers = Vec::new(&env);
         let title = String::from_str(&env, "New Grant");
         let description = String::from_str(&env, "Some desc");
@@ -1987,7 +1993,7 @@ mod tests {
             &owner,
             &title,
             &description,
-            &token,
+            &token_id,
             &1000i128,
             &500i128,
             &0u32,
@@ -2000,7 +2006,7 @@ mod tests {
             &owner,
             &title,
             &description,
-            &token,
+            &token_id,
             &100000i128,
             &100i128,
             &101u32,
@@ -2012,9 +2018,9 @@ mod tests {
     #[test]
     fn test_grant_create_amount_mismatch() {
         let env = Env::default();
-        let (client, _, _) = setup_test(&env);
+        let (client, admin, _) = setup_test(&env);
         let owner = Address::generate(&env);
-        let token = Address::generate(&env);
+        let token_id = register_sep41_token(&env, admin.clone());
         let reviewers = Vec::new(&env);
         let title = String::from_str(&env, "New Grant");
         let description = String::from_str(&env, "Some desc");
@@ -2027,7 +2033,7 @@ mod tests {
             &owner,
             &title,
             &description,
-            &token,
+            &token_id,
             &800i128,
             &500i128,
             &2u32,
@@ -2059,6 +2065,80 @@ mod tests {
             &reviewers,
         );
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_grant_create_rejects_non_compliant_token() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (client, _, _) = setup_test(&env);
+        let owner = Address::generate(&env);
+        let junk = Address::generate(&env);
+        let reviewers = Vec::new(&env);
+
+        let res = client.try_grant_create(
+            &owner,
+            &String::from_str(&env, "Bad token"),
+            &String::from_str(&env, "x"),
+            &junk,
+            &1000i128,
+            &500i128,
+            &2u32,
+            &reviewers,
+        );
+        assert_eq!(res, Err(Ok(ContractError::InvalidTokenInterface.into())));
+    }
+
+    #[test]
+    fn test_grant_fund_and_release_with_sep41_token() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (client, admin, contract_id) = setup_test(&env);
+        let token_id = register_sep41_token(&env, admin.clone());
+        let token_admin = token::StellarAssetClient::new(&env, &token_id);
+
+        let owner = Address::generate(&env);
+        let funder = Address::generate(&env);
+        let reviewers = Vec::new(&env);
+
+        let grant_id = client.grant_create(
+            &owner,
+            &String::from_str(&env, "SAC grant"),
+            &String::from_str(&env, "Custom token path"),
+            &token_id,
+            &500i128,
+            &500i128,
+            &1u32,
+            &reviewers,
+        );
+
+        token_admin.mint(&funder, &500i128);
+        client.grant_fund(&grant_id, &funder, &500i128);
+
+        env.as_contract(&contract_id, || {
+            let m = Milestone {
+                idx: 0,
+                description: String::from_str(&env, "M1"),
+                amount: 500,
+                state: MilestoneState::Approved,
+                votes: Map::new(&env),
+                approvals: 1,
+                rejections: 0,
+                reasons: Map::new(&env),
+                status_updated_at: 0,
+                proof_url: None,
+                submission_timestamp: 0,
+            };
+            Storage::set_milestone(&env, grant_id, 0, &m);
+        });
+
+        client.grant_complete(&grant_id);
+
+        let tok = token::Client::new(&env, &token_id);
+        assert_eq!(tok.balance(&owner), 500i128);
+        assert_eq!(tok.balance(&contract_id), 0i128);
     }
 
     #[test]

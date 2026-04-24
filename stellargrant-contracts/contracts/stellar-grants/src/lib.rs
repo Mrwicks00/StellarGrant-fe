@@ -69,7 +69,7 @@ impl StellarGrantsContract {
     /// * `owner` - The address of the grant owner.
     /// * `title` - The title of the grant.
     /// * `description` - The description of the grant.
-    /// * `token` - The underlying token for funding the grant.
+    /// * `token_address` - Soroban token / Stellar Asset Contract (SEP-41) used for funding and payouts.
     /// * `total_amount` - The total amount to be raised.
     /// * `milestone_amount` - The payout chunk for each milestone.
     /// * `num_milestones` - The number of milestones (up to 100).
@@ -77,19 +77,22 @@ impl StellarGrantsContract {
     ///
     /// # Errors
     /// * [`ContractError::InvalidInput`] – if validation of amounts or milestones fails.
+    /// * [`ContractError::InvalidTokenInterface`] – if `token_address` is not a compliant token contract.
     #[allow(clippy::too_many_arguments)]
     pub fn grant_create(
         env: Env,
         owner: Address,
         title: String,
         description: String,
-        token: Address,
+        token_address: Address,
         total_amount: i128,
         milestone_amount: i128,
         num_milestones: u32,
         reviewers: soroban_sdk::Vec<Address>,
     ) -> Result<u64, ContractError> {
         owner.require_auth();
+
+        ensure_token_interface(&env, &token_address)?;
 
         if total_amount <= 0 || milestone_amount <= 0 {
             return Err(ContractError::InvalidInput);
@@ -114,7 +117,7 @@ impl StellarGrantsContract {
             owner: owner.clone(),
             title: title.clone(),
             description,
-            token,
+            token_address,
             status: GrantStatus::Active,
             total_amount,
             milestone_amount,
@@ -152,7 +155,7 @@ impl StellarGrantsContract {
         owner: Address,
         title: String,
         description: String,
-        token: Address,
+        token_address: Address,
         total_amount: i128,
         milestone_amount: i128,
         num_milestones: u32,
@@ -164,7 +167,7 @@ impl StellarGrantsContract {
             owner,
             title,
             description,
-            token,
+            token_address,
             total_amount,
             milestone_amount,
             num_milestones,
@@ -180,7 +183,7 @@ impl StellarGrantsContract {
     /// * `owner` - Grant owner address.
     /// * `title` - Grant title.
     /// * `description` - Grant description.
-    /// * `token` - Token address used for funding and payouts.
+    /// * `token_address` - Token contract (SEP-41) used for funding and payouts.
     /// * `total_amount` - Total amount requested for the grant.
     /// * `milestone_amount` - Per-milestone payout amount.
     /// * `num_milestones` - Number of milestones to support.
@@ -198,7 +201,7 @@ impl StellarGrantsContract {
         owner: Address,
         title: String,
         description: String,
-        token: Address,
+        token_address: Address,
         total_amount: i128,
         milestone_amount: i128,
         num_milestones: u32,
@@ -214,7 +217,7 @@ impl StellarGrantsContract {
             owner,
             title,
             description,
-            token,
+            token_address,
             total_amount,
             milestone_amount,
             num_milestones,
@@ -325,7 +328,7 @@ impl StellarGrantsContract {
                     return Err(ContractError::InvalidInput);
                 }
 
-                let token_client = token::Client::new(&env, &grant.token);
+                let token_client = token::Client::new(&env, &grant.token_address);
                 let funders_len = grant.funders.len();
                 let mut distributed = 0i128;
 
@@ -502,7 +505,7 @@ impl StellarGrantsContract {
             return Err(ContractError::InvalidInput);
         }
         let remaining_balance = grant.escrow_balance - total_paid;
-        let token_client = token::Client::new(env, &grant.token);
+        let token_client = token::Client::new(env, &grant.token_address);
 
         if total_paid > 0 {
             token_client.transfer(&env.current_contract_address(), &grant.owner, &total_paid);
@@ -944,7 +947,7 @@ impl StellarGrantsContract {
             }
 
             // Perform the token transfer from the funder to the contract
-            let token_client = token::Client::new(&env, &grant.token);
+            let token_client = token::Client::new(&env, &grant.token_address);
             let contract_address = env.current_contract_address();
             token_client.transfer(&funder, &contract_address, &amount);
 
@@ -1057,7 +1060,7 @@ impl StellarGrantsContract {
             }
 
             let contract_addr = env.current_contract_address();
-            let client = token::Client::new(&env, &grant.token);
+            let client = token::Client::new(&env, &grant.token_address);
             client.transfer(&reviewer, &contract_addr, &amount);
 
             let current = Storage::get_reviewer_stake(&env, grant_id, &reviewer);
@@ -1084,7 +1087,7 @@ impl StellarGrantsContract {
             }
 
             let treasury = Storage::get_treasury(&env).ok_or(ContractError::InvalidInput)?;
-            let client = token::Client::new(&env, &grant.token);
+            let client = token::Client::new(&env, &grant.token_address);
             client.transfer(&env.current_contract_address(), &treasury, &stake);
 
             Storage::set_reviewer_stake(&env, grant_id, &reviewer, 0);
@@ -1108,7 +1111,7 @@ impl StellarGrantsContract {
                 return Err(ContractError::StakeNotFound);
             }
 
-            let client = token::Client::new(&env, &grant.token);
+            let client = token::Client::new(&env, &grant.token_address);
             client.transfer(&env.current_contract_address(), &reviewer, &stake);
 
             Storage::set_reviewer_stake(&env, grant_id, &reviewer, 0);
@@ -1168,7 +1171,7 @@ impl StellarGrantsContract {
                 }
 
                 let contract_addr = env.current_contract_address();
-                let client = token::Client::new(&env, &grant.token);
+                let client = token::Client::new(&env, &grant.token_address);
                 client.transfer(&funder, &contract_addr, &amount);
 
                 grant.escrow_balance = grant
@@ -1251,6 +1254,16 @@ fn apply_milestone_submission(
     Storage::set_milestone(env, grant_id, milestone_idx, &milestone);
     Events::emit_milestone_submitted(env, grant_id, milestone_idx, description);
 
+    Ok(())
+}
+
+/// Verifies `token_address` exposes the Soroban standard token interface (SEP-41), same surface as `token::Client`.
+fn ensure_token_interface(env: &Env, token_address: &Address) -> Result<(), ContractError> {
+    let client = token::Client::new(env, token_address);
+    let _decimals: u32 = client
+        .try_decimals()
+        .map_err(|_| ContractError::InvalidTokenInterface)?
+        .map_err(|_| ContractError::InvalidTokenInterface)?;
     Ok(())
 }
 

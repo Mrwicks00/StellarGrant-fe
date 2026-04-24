@@ -396,7 +396,7 @@
                   },
                   {
                     "key": {
-                      "symbol": "token"
+                      "symbol": "token_address"
                     },
                     "val": {
                       "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
