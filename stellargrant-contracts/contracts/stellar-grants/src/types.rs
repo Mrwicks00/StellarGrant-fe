@@ -82,6 +82,12 @@ impl AccessControl {
     }
 }
 
+impl Default for AccessControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(u32)]

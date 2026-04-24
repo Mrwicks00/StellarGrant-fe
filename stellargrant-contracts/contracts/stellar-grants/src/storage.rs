@@ -105,11 +105,7 @@ impl Storage {
 
     pub fn get_access_control(env: &Env, address: &soroban_sdk::Address) -> AccessControl {
         let key = DataKey::AccessControl(address.clone());
-        let access = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(AccessControl::new());
+        let access: AccessControl = env.storage().persistent().get(&key).unwrap_or_default();
         if access.role_flags != 0 {
             Self::bump_persistent_ttl(env, &key);
         }
