@@ -14,8 +14,8 @@ mod types;
 pub use events::Events;
 pub use storage::Storage;
 pub use types::{
-    ContractError, EscrowLifecycleState, EscrowMode, EscrowState, Grant, GrantFund, GrantStatus,
-    Milestone, MilestoneState, MilestoneSubmission,
+    ContractError, DisputeInfo, EscrowLifecycleState, EscrowMode, EscrowState, Grant, GrantFund,
+    GrantStatus, Milestone, MilestoneState, MilestoneSubmission,
 };
 
 use soroban_sdk::{
@@ -38,7 +38,11 @@ pub struct StellarGrantsContract;
 
 #[contractimpl]
 impl StellarGrantsContract {
-    /// Initiate a dispute on a milestone. Callable by grant owner, reviewers, or contributor.
+    /// Initiate a dispute on a milestone. Callable by grant owner or reviewers.
+    ///
+    /// Issue #152: if a global `dispute_fee_amount` is set, the caller must transfer
+    /// that fee (in the milestone's payout token) to the contract. The fee is refunded
+    /// if the dispute is upheld, or sent to the treasury if dismissed.
     pub fn dispute_milestone(
         env: Env,
         grant_id: u64,
@@ -49,25 +53,53 @@ impl StellarGrantsContract {
         let grant = Storage::get_grant(&env, grant_id).ok_or(ContractError::GrantNotFound)?;
         let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
             .ok_or(ContractError::MilestoneNotFound)?;
-        // Only grant owner, reviewers, or contributor can dispute
+
         let is_reviewer = grant.reviewers.contains(caller.clone());
         let is_owner = grant.owner == caller;
-        // For now, assume contributor is grant.owner (can be extended)
         if !(is_owner || is_reviewer) {
             return Err(ContractError::Unauthorized);
         }
-        if milestone.state != MilestoneState::Submitted
-            && milestone.state != MilestoneState::Approved
-            && milestone.state != MilestoneState::Paid
-            && milestone.state != MilestoneState::AwaitingPayout
+        if milestone.state() != MilestoneState::Submitted
+            && milestone.state() != MilestoneState::Approved
+            && milestone.state() != MilestoneState::Paid
+            && milestone.state() != MilestoneState::AwaitingPayout
         {
             return Err(ContractError::InvalidState);
         }
-        milestone.state = MilestoneState::Disputed;
+
+        // Issue #152: collect dispute fee if configured
+        let fee_amount = Storage::get_dispute_fee_amount(&env);
+        if fee_amount > 0 {
+            if Storage::get_milestone_dispute_info(&env, grant_id, milestone_idx).is_some() {
+                return Err(ContractError::DisputeAlreadyCharged);
+            }
+            let fee_token = milestone.payout_token.clone();
+            let token_client = token::Client::new(&env, &fee_token);
+            token_client.transfer(&caller, env.current_contract_address(), &fee_amount);
+
+            Storage::set_milestone_dispute_info(
+                &env,
+                grant_id,
+                milestone_idx,
+                &DisputeInfo {
+                    payer: caller.clone(),
+                    fee_amount,
+                    fee_token: fee_token.clone(),
+                },
+            );
+            Events::emit_dispute_fee_charged(
+                &env,
+                grant_id,
+                milestone_idx,
+                caller.clone(),
+                fee_amount,
+            );
+        }
+
+        milestone.set_state(MilestoneState::Disputed);
         milestone.status_updated_at = env.ledger().timestamp();
         Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
         Events::milestone_status_changed(&env, grant_id, milestone_idx, MilestoneState::Disputed);
-        // Enhanced event emission: include all relevant data, standardize topics
         Ok(())
     }
 
@@ -81,11 +113,11 @@ impl StellarGrantsContract {
         let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
             .ok_or(ContractError::MilestoneNotFound)?;
 
-        if milestone.state == MilestoneState::Approved {
+        if milestone.state() == MilestoneState::Approved {
             return Err(ContractError::MilestoneAlreadyApproved);
         }
 
-        if milestone.state != MilestoneState::Submitted {
+        if milestone.state() != MilestoneState::Submitted {
             return Err(ContractError::InvalidState);
         }
 
@@ -102,7 +134,7 @@ impl StellarGrantsContract {
         }
 
         // State Update
-        milestone.state = MilestoneState::Approved;
+        milestone.set_state(MilestoneState::Approved);
         milestone.status_updated_at = env.ledger().timestamp();
 
         let recipient = grant.owner.clone();
@@ -119,6 +151,9 @@ impl StellarGrantsContract {
 
         let token_client = token::Client::new(&env, &payout_token);
         token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+
+        // Issue #151: credit reputation after payout
+        Self::update_contributor_reputation(&env, grant_id, milestone_idx, &recipient, amount);
 
         // Events
         Events::emit_milestone_approved(
@@ -149,10 +184,10 @@ impl StellarGrantsContract {
         }
         let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
             .ok_or(ContractError::MilestoneNotFound)?;
-        if milestone.state != MilestoneState::Disputed {
+        if milestone.state() != MilestoneState::Disputed {
             return Err(ContractError::InvalidState);
         }
-        milestone.state = MilestoneState::Resolved;
+        milestone.set_state(MilestoneState::Resolved);
         milestone.status_updated_at = env.ledger().timestamp();
         Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
         Events::milestone_status_changed(&env, grant_id, milestone_idx, MilestoneState::Resolved);
@@ -187,8 +222,16 @@ impl StellarGrantsContract {
                     .set(payout_token.clone(), current_balance - milestone.amount);
                 grant.set_milestones_paid_out(grant.milestones_paid_out() + 1);
                 Storage::set_grant(&env, grant_id, &grant);
+
+                // Issue #151: credit reputation for the payout
+                Self::update_contributor_reputation(
+                    &env,
+                    grant_id,
+                    milestone_idx,
+                    &grant.owner,
+                    milestone.amount,
+                );
             }
-            // Enhanced event emission: include all relevant data, standardize topics
             Events::emit_milestone_paid(
                 &env,
                 grant_id,
@@ -196,6 +239,28 @@ impl StellarGrantsContract {
                 milestone.amount,
                 payout_token.clone(),
             );
+
+            // Issue #152: refund dispute fee to caller (dispute was upheld)
+            if let Some(dispute_info) =
+                Storage::get_milestone_dispute_info(&env, grant_id, milestone_idx)
+            {
+                if dispute_info.fee_amount > 0 {
+                    let fee_token_client = token::Client::new(&env, &dispute_info.fee_token);
+                    fee_token_client.transfer(
+                        &env.current_contract_address(),
+                        &dispute_info.payer,
+                        &dispute_info.fee_amount,
+                    );
+                    Events::emit_dispute_fee_refunded(
+                        &env,
+                        grant_id,
+                        milestone_idx,
+                        dispute_info.payer.clone(),
+                        dispute_info.fee_amount,
+                    );
+                }
+                Storage::remove_milestone_dispute_info(&env, grant_id, milestone_idx);
+            }
         } else {
             // Reject: refund milestone amount to funders (pro-rata)
             let total_refundable = milestone.amount;
@@ -251,9 +316,143 @@ impl StellarGrantsContract {
             }
             grant
                 .escrow_balances
-                .set(payout_token, current_balance - total_refundable);
+                .set(payout_token.clone(), current_balance - total_refundable);
             Storage::set_grant(&env, grant_id, &grant);
+
+            // Issue #152: slash dispute fee → treasury (dispute dismissed)
+            if let Some(dispute_info) =
+                Storage::get_milestone_dispute_info(&env, grant_id, milestone_idx)
+            {
+                if dispute_info.fee_amount > 0 {
+                    let fee_token_client = token::Client::new(&env, &dispute_info.fee_token);
+                    if let Some(treasury) = Storage::get_treasury(&env) {
+                        fee_token_client.transfer(
+                            &env.current_contract_address(),
+                            &treasury,
+                            &dispute_info.fee_amount,
+                        );
+                        Events::emit_dispute_fee_slashed(
+                            &env,
+                            grant_id,
+                            milestone_idx,
+                            treasury,
+                            dispute_info.fee_amount,
+                        );
+                    }
+                }
+                Storage::remove_milestone_dispute_info(&env, grant_id, milestone_idx);
+            }
         }
+        Ok(())
+    }
+
+    /// Claws back all remaining escrowed funds from a grant in cases of proven fraud.
+    ///
+    /// Only callable by the registered council address. Iterates through all tokens
+    /// in the grant's `escrow_balances` and refunds each non-zero balance to the
+    /// original funders pro-rata (matching the logic used in `resolve_dispute`).
+    /// Sets the grant status to [`GrantStatus::Cancelled`] and emits a
+    /// [`Events::emit_grant_clawbacked`] event.
+    ///
+    /// # Arguments
+    /// * `council` - The DAO Council address (must match the registered council).
+    /// * `grant_id` - The grant whose escrowed funds are to be clawed back.
+    ///
+    /// # Errors
+    /// * [`ContractError::Unauthorized`] – caller is not the registered council.
+    /// * [`ContractError::GrantNotFound`] – grant does not exist.
+    /// * [`ContractError::InvalidState`] – grant is already Cancelled or Completed.
+    pub fn grant_clawback(env: Env, council: Address, grant_id: u64) -> Result<(), ContractError> {
+        council.require_auth();
+
+        let council_addr = Storage::get_council(&env).ok_or(ContractError::InvalidInput)?;
+        if council_addr != council {
+            return Err(ContractError::Unauthorized);
+        }
+
+        let mut grant = Storage::get_grant(&env, grant_id).ok_or(ContractError::GrantNotFound)?;
+
+        // Only clawback grants that are still active (not already cancelled/completed).
+        if grant.status() == GrantStatus::Cancelled || grant.status() == GrantStatus::Completed {
+            return Err(ContractError::InvalidState);
+        }
+
+        let mut total_clawed_back: i128 = 0;
+
+        // Collect all token addresses from escrow_balances to avoid borrow issues.
+        let mut token_list: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&env);
+        for (token, _) in grant.escrow_balances.iter() {
+            token_list.push_back(token);
+        }
+
+        for token in token_list.iter() {
+            let balance = grant.escrow_balances.get(token.clone()).unwrap_or(0);
+            if balance <= 0 {
+                continue;
+            }
+
+            let token_client = token::Client::new(&env, &token);
+
+            // Pro-rata refund to funders who contributed in this token.
+            let mut total_token_contributions: i128 = 0;
+            let mut token_funders: soroban_sdk::Vec<GrantFund> = soroban_sdk::Vec::new(&env);
+            for fund_entry in grant.funders.iter() {
+                if fund_entry.token == token {
+                    total_token_contributions += fund_entry.amount;
+                    token_funders.push_back(fund_entry);
+                }
+            }
+
+            if total_token_contributions > 0 {
+                let token_funders_len = token_funders.len();
+                let mut distributed: i128 = 0;
+
+                for i in 0..token_funders_len {
+                    let fund_entry = token_funders.get(i).unwrap();
+                    let is_last = i + 1 == token_funders_len;
+                    let refund_amount = if is_last {
+                        balance - distributed
+                    } else {
+                        let amount = fund_entry
+                            .amount
+                            .checked_mul(balance)
+                            .ok_or(ContractError::InvalidInput)?
+                            .checked_div(total_token_contributions)
+                            .ok_or(ContractError::InvalidInput)?;
+                        distributed += amount;
+                        amount
+                    };
+
+                    if refund_amount > 0 {
+                        token_client.transfer(
+                            &env.current_contract_address(),
+                            &fund_entry.funder,
+                            &refund_amount,
+                        );
+                        Events::emit_refund_issued(
+                            &env,
+                            grant_id,
+                            fund_entry.funder.clone(),
+                            refund_amount,
+                            token.clone(),
+                        );
+                    }
+                }
+            } else {
+                // No funders recorded for this token; send the entire balance to the council
+                // as a fallback to avoid permanently locking funds.
+                token_client.transfer(&env.current_contract_address(), &council, &balance);
+            }
+
+            total_clawed_back += balance;
+            grant.escrow_balances.set(token.clone(), 0);
+        }
+
+        grant.set_status(GrantStatus::Cancelled);
+        Storage::set_grant(&env, grant_id, &grant);
+
+        Events::emit_grant_clawbacked(&env, grant_id, council, total_clawed_back);
+
         Ok(())
     }
 
@@ -269,7 +468,7 @@ impl StellarGrantsContract {
         let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
             .ok_or(ContractError::MilestoneNotFound)?;
 
-        if milestone.state != MilestoneState::Approved {
+        if milestone.state() != MilestoneState::Approved {
             return Err(ContractError::InvalidState);
         }
 
@@ -297,6 +496,17 @@ impl StellarGrantsContract {
         Storage::set_grant(&env, grant_id, &grant);
         Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
 
+        // Issue #151: credit reputation after manual withdrawal payout
+        let owner_clone = grant.owner.clone();
+        let amount_clone = milestone.amount;
+        Self::update_contributor_reputation(
+            &env,
+            grant_id,
+            milestone_idx,
+            &owner_clone,
+            amount_clone,
+        );
+
         Events::emit_milestone_paid(
             &env,
             grant_id,
@@ -307,6 +517,27 @@ impl StellarGrantsContract {
         Events::milestone_status_changed(&env, grant_id, milestone_idx, MilestoneState::Paid);
 
         Ok(())
+    }
+
+    /// Set the global dispute fee amount (admin-only). Issue #152.
+    pub fn set_dispute_fee(
+        env: Env,
+        admin: Address,
+        fee_amount: i128,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        let stored_admin =
+            Storage::get_global_admin(&env).ok_or(ContractError::NotContractAdmin)?;
+        if stored_admin != admin {
+            return Err(ContractError::NotContractAdmin);
+        }
+        Storage::set_dispute_fee_amount(&env, fee_amount);
+        Ok(())
+    }
+
+    /// Get the current dispute fee amount. Issue #152.
+    pub fn get_dispute_fee(env: Env) -> i128 {
+        Storage::get_dispute_fee_amount(&env)
     }
 
     /// Initialize the contract with a global admin and council for dispute resolution.
@@ -494,7 +725,7 @@ impl StellarGrantsContract {
         milestone_deadlines: Option<soroban_sdk::Vec<u64>>,
         min_funding: i128,
         hard_cap: i128,
-        tags: soroban_sdk::Vec<Symbol>,
+        tags: soroban_sdk::Vec<String>,
     ) -> Result<u64, ContractError> {
         owner.require_auth();
         assert_not_paused(&env)?;
@@ -557,7 +788,7 @@ impl StellarGrantsContract {
             cancellation_requested_at: None,
             min_funding,
             hard_cap,
-            tags,
+            tags: tags.clone(),
             packed_config: 0,
         };
         grant.set_status(initial_status);
@@ -571,12 +802,12 @@ impl StellarGrantsContract {
         Storage::set_escrow_state(
             &env,
             grant_id,
-            &EscrowState {
-                mode: EscrowMode::Standard,
-                lifecycle: EscrowLifecycleState::Funding,
-                quorum_ready: false,
-                approvals_count: 0,
-            },
+            &EscrowState::new(
+                EscrowMode::Standard,
+                EscrowLifecycleState::Funding,
+                false,
+                0,
+            ),
         );
         Storage::set_multisig_signers(&env, grant_id, &soroban_sdk::Vec::new(&env));
 
@@ -756,12 +987,12 @@ impl StellarGrantsContract {
         Storage::set_escrow_state(
             &env,
             grant_id,
-            &EscrowState {
-                mode: EscrowMode::HighSecurity,
-                lifecycle: EscrowLifecycleState::Funding,
-                quorum_ready: false,
-                approvals_count: 0,
-            },
+            &EscrowState::new(
+                EscrowMode::HighSecurity,
+                EscrowLifecycleState::Funding,
+                false,
+                0,
+            ),
         );
         Storage::set_multisig_signers(&env, grant_id, &multisig_signers);
 
@@ -865,8 +1096,8 @@ impl StellarGrantsContract {
                     let mut has_active_submission = false;
                     for milestone_idx in 0..grant.total_milestones() {
                         if let Some(m) = Storage::get_milestone(&env, grant_id, milestone_idx) {
-                            if m.state == MilestoneState::Submitted
-                                || m.state == MilestoneState::CommunityReview
+                            if m.state() == MilestoneState::Submitted
+                                || m.state() == MilestoneState::CommunityReview
                             {
                                 has_active_submission = true;
                                 break;
@@ -1010,22 +1241,22 @@ impl StellarGrantsContract {
             }
 
             let mut escrow_state = Storage::get_escrow_state(&env, grant_id);
-            if escrow_state.lifecycle == EscrowLifecycleState::Released {
+            if escrow_state.lifecycle() == EscrowLifecycleState::Released {
                 return Err(ContractError::GrantAlreadyReleased);
             }
 
             // Quorum is interpreted as all milestones approved in current contract design.
             let _ =
                 Self::compute_total_paid_if_quorum_ready(&env, grant_id, grant.total_milestones())?;
-            escrow_state.quorum_ready = true;
+            escrow_state.set_quorum_ready(true);
 
-            if escrow_state.mode == EscrowMode::Standard {
+            if escrow_state.mode() == EscrowMode::Standard {
                 Self::finalize_grant_release(&env, grant_id)?;
                 return Ok(());
             }
 
             // High-security grants remain locked until every multisig signer calls sign_release.
-            escrow_state.lifecycle = EscrowLifecycleState::AwaitingMultisig;
+            escrow_state.set_lifecycle(EscrowLifecycleState::AwaitingMultisig);
             Storage::set_escrow_state(&env, grant_id, &escrow_state);
             Ok(())
         })
@@ -1065,10 +1296,10 @@ impl StellarGrantsContract {
             }
 
             let mut escrow_state = Storage::get_escrow_state(&env, grant_id);
-            if escrow_state.mode != EscrowMode::HighSecurity {
+            if escrow_state.mode() != EscrowMode::HighSecurity {
                 return Err(ContractError::InvalidState);
             }
-            if escrow_state.lifecycle == EscrowLifecycleState::Released {
+            if escrow_state.lifecycle() == EscrowLifecycleState::Released {
                 return Err(ContractError::GrantAlreadyReleased);
             }
 
@@ -1081,14 +1312,14 @@ impl StellarGrantsContract {
             }
 
             Storage::set_release_approval(&env, grant_id, &signer, true);
-            escrow_state.approvals_count += 1;
+            escrow_state.set_approvals_count(escrow_state.approvals_count() + 1);
             Storage::set_escrow_state(&env, grant_id, &escrow_state);
 
-            let approvals_complete = escrow_state.approvals_count >= signers.len();
-            if approvals_complete && escrow_state.quorum_ready {
+            let approvals_complete = escrow_state.approvals_count() >= signers.len();
+            if approvals_complete && escrow_state.quorum_ready() {
                 Self::finalize_grant_release(&env, grant_id)?;
             } else if approvals_complete {
-                escrow_state.lifecycle = EscrowLifecycleState::AwaitingMultisig;
+                escrow_state.set_lifecycle(EscrowLifecycleState::AwaitingMultisig);
                 Storage::set_escrow_state(&env, grant_id, &escrow_state);
             }
 
@@ -1105,9 +1336,9 @@ impl StellarGrantsContract {
         let mut approved_count = 0;
         for milestone_idx in 0..total_milestones {
             if let Some(milestone) = Storage::get_milestone(env, grant_id, milestone_idx) {
-                if milestone.state != MilestoneState::Approved
-                    && milestone.state != MilestoneState::AwaitingPayout
-                    && milestone.state != MilestoneState::Paid
+                if milestone.state() != MilestoneState::Approved
+                    && milestone.state() != MilestoneState::AwaitingPayout
+                    && milestone.state() != MilestoneState::Paid
                 {
                     return Err(ContractError::NotAllMilestonesApproved);
                 }
@@ -1194,15 +1425,15 @@ impl StellarGrantsContract {
         // Mark all approved or awaiting payout milestones as paid
         for milestone_idx in 0..grant.total_milestones() {
             if let Some(mut milestone) = Storage::get_milestone(env, grant_id, milestone_idx) {
-                if milestone.state == MilestoneState::Approved
-                    || milestone.state == MilestoneState::AwaitingPayout
+                if milestone.state() == MilestoneState::Approved
+                    || milestone.state() == MilestoneState::AwaitingPayout
                 {
-                    if milestone.state == MilestoneState::AwaitingPayout
+                    if milestone.state() == MilestoneState::AwaitingPayout
                         && env.ledger().timestamp() < milestone.status_updated_at + CHALLENGE_PERIOD
                     {
-                        return Err(ContractError::DeadlinePassed); // Must wait until challenge period elapses
+                        return Err(ContractError::DeadlinePassed);
                     }
-                    milestone.state = MilestoneState::Paid;
+                    milestone.set_state(MilestoneState::Paid);
                     milestone.status_updated_at = env.ledger().timestamp();
                     Storage::set_milestone(env, grant_id, milestone_idx, &milestone);
 
@@ -1257,12 +1488,19 @@ impl StellarGrantsContract {
         }
 
         let mut escrow_state = Storage::get_escrow_state(env, grant_id);
-        escrow_state.lifecycle = EscrowLifecycleState::Released;
-        escrow_state.quorum_ready = true;
+        escrow_state.set_lifecycle(EscrowLifecycleState::Released);
+        escrow_state.set_quorum_ready(true);
         Storage::set_escrow_state(env, grant_id, &escrow_state);
 
-        // Enhanced event emission: include all relevant data, standardize topics
-        Events::emit_payee_receipt(env, grant_id, grant.owner.clone(), total_paid);
+        // Emit a completion receipt snapshot for indexers.
+        Events::emit_payee_receipt(
+            env,
+            grant_id,
+            grant.owner.clone(),
+            grant.primary_token.clone(),
+            total_paid,
+            None,
+        );
 
         Events::emit_grant_completed(env, grant_id, total_paid, remaining_balance);
         Ok(())
@@ -1295,21 +1533,31 @@ impl StellarGrantsContract {
             return Err(ContractError::InvalidState);
         }
 
-        if milestone.state == MilestoneState::CommunityReview {
+        if milestone.state() == MilestoneState::CommunityReview {
             if env.ledger().timestamp() < milestone.submission_timestamp + COMMUNITY_REVIEW_PERIOD {
                 return Err(ContractError::CommunityReviewPeriod);
             }
             // Community period has elapsed — transition to Submitted so voting proceeds.
-            milestone.state = MilestoneState::Submitted;
-        } else if milestone.state != MilestoneState::Submitted {
+            milestone.set_state(MilestoneState::Submitted);
+        } else if milestone.state() != MilestoneState::Submitted {
             return Err(ContractError::MilestoneNotSubmitted);
         }
-        if milestone.state == MilestoneState::Disputed {
+        if milestone.state() == MilestoneState::Disputed {
             return Err(ContractError::InvalidState);
         }
 
         if !grant.reviewers.contains(reviewer.clone()) {
             return Err(ContractError::Unauthorized);
+        }
+
+        // Issue #164: enforce MinReviewerStake — reviewer must have staked at least
+        // the global minimum before they can cast a vote on any milestone.
+        let min_stake = Storage::get_min_reviewer_stake(&env);
+        if min_stake > 0 {
+            let reviewer_stake = Storage::get_reviewer_stake(&env, grant_id, &reviewer);
+            if reviewer_stake < min_stake {
+                return Err(ContractError::InsufficientStake);
+            }
         }
 
         // Duplicate-vote guard: return error if reviewer already voted
@@ -1354,7 +1602,7 @@ impl StellarGrantsContract {
             }
 
             // ----- Milestone approved, awaiting challenge period -----
-            milestone.state = MilestoneState::AwaitingPayout;
+            milestone.set_state(MilestoneState::AwaitingPayout);
             milestone.status_updated_at = env.ledger().timestamp();
             Events::milestone_status_changed(
                 &env,
@@ -1397,12 +1645,12 @@ impl StellarGrantsContract {
         let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
             .ok_or(ContractError::MilestoneNotSubmitted)?;
 
-        if milestone.state == MilestoneState::CommunityReview {
+        if milestone.state() == MilestoneState::CommunityReview {
             if env.ledger().timestamp() < milestone.submission_timestamp + COMMUNITY_REVIEW_PERIOD {
                 return Err(ContractError::CommunityReviewPeriod);
             }
-            milestone.state = MilestoneState::Submitted;
-        } else if milestone.state != MilestoneState::Submitted {
+            milestone.set_state(MilestoneState::Submitted);
+        } else if milestone.state() != MilestoneState::Submitted {
             return Err(ContractError::MilestoneNotSubmitted);
         }
 
@@ -1422,7 +1670,7 @@ impl StellarGrantsContract {
         let majority_rejected = milestone.rejections() >= grant.quorum();
 
         if majority_rejected {
-            milestone.state = MilestoneState::Rejected;
+            milestone.set_state(MilestoneState::Rejected);
             milestone.status_updated_at = env.ledger().timestamp();
 
             // Reward harmonious voters who voted reject
@@ -1467,11 +1715,11 @@ impl StellarGrantsContract {
         let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
             .ok_or(ContractError::MilestoneNotFound)?;
 
-        if milestone.state != MilestoneState::Rejected {
+        if milestone.state() != MilestoneState::Rejected {
             return Err(ContractError::InvalidState);
         }
 
-        milestone.state = MilestoneState::Disputed;
+        milestone.set_state(MilestoneState::Disputed);
         milestone.status_updated_at = env.ledger().timestamp();
         Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
 
@@ -1497,30 +1745,30 @@ impl StellarGrantsContract {
         let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
             .ok_or(ContractError::MilestoneNotFound)?;
 
-        if milestone.state != MilestoneState::Disputed
-            && milestone.state != MilestoneState::Challenged
+        if milestone.state() != MilestoneState::Disputed
+            && milestone.state() != MilestoneState::Challenged
         {
             return Err(ContractError::InvalidState);
         }
 
-        if milestone.state == MilestoneState::Disputed {
-            milestone.state = if approve {
+        if milestone.state() == MilestoneState::Disputed {
+            milestone.set_state(if approve {
                 MilestoneState::Approved
             } else {
                 MilestoneState::Rejected
-            };
+            });
         } else {
             // Milestone is Challenged
-            milestone.state = if approve {
+            milestone.set_state(if approve {
                 MilestoneState::AwaitingPayout // Owner wins, resume to AwaitingPayout
             } else {
                 MilestoneState::Rejected // Funder wins, reject the milestone
-            };
+            });
         }
         milestone.status_updated_at = env.ledger().timestamp();
         Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
 
-        Events::milestone_status_changed(&env, grant_id, milestone_idx, milestone.state.clone());
+        Events::milestone_status_changed(&env, grant_id, milestone_idx, milestone.state());
 
         Ok(())
     }
@@ -1666,7 +1914,9 @@ impl StellarGrantsContract {
             if grant.status() == GrantStatus::Inactive {
                 return Err(ContractError::HeartbeatMissed);
             }
-            if grant.status() != GrantStatus::Active && grant.status() != GrantStatus::PendingFunding {
+            if grant.status() != GrantStatus::Active
+                && grant.status() != GrantStatus::PendingFunding
+            {
                 return Err(ContractError::InvalidState);
             }
 
@@ -1679,25 +1929,6 @@ impl StellarGrantsContract {
             let new_balance = current_balance
                 .checked_add(amount)
                 .ok_or(ContractError::InvalidInput)?;
-
-            // Enforce hard cap if set (hard_cap > 0)
-            if grant.hard_cap > 0 {
-                // Sum all token balances + this new addition
-                let mut total_escrow: i128 = 0;
-                for (_tok, bal) in grant.escrow_balances.iter() {
-                    total_escrow = total_escrow
-                        .checked_add(bal)
-                        .ok_or(ContractError::InvalidInput)?;
-                }
-                // total_escrow already includes the old balance for this token;
-                // add the new amount to get the prospective total.
-                let prospective_total = total_escrow
-                    .checked_add(amount)
-                    .ok_or(ContractError::InvalidInput)?;
-                if prospective_total > grant.hard_cap {
-                    return Err(ContractError::CapReached);
-                }
-            }
 
             grant.escrow_balances.set(token.clone(), new_balance);
 
@@ -1729,7 +1960,8 @@ impl StellarGrantsContract {
                 .escrow_balances
                 .get(grant.primary_token.clone())
                 .unwrap_or(0);
-            if grant.status() == GrantStatus::PendingFunding && primary_balance >= grant.min_funding {
+            if grant.status() == GrantStatus::PendingFunding && primary_balance >= grant.min_funding
+            {
                 grant.set_status(GrantStatus::Active);
                 Storage::index_transition(
                     &env,
@@ -1743,8 +1975,15 @@ impl StellarGrantsContract {
             Storage::set_grant(&env, grant_id, &grant);
 
             // Enhanced event emission: include all relevant data, standardize topics
-            Events::emit_grant_funded(&env, grant_id, funder.clone(), amount, token, new_balance);
-            Events::emit_payer_receipt(&env, grant_id, funder, amount, memo);
+            Events::emit_grant_funded(
+                &env,
+                grant_id,
+                funder.clone(),
+                amount,
+                token.clone(),
+                new_balance,
+            );
+            Events::emit_payer_receipt(&env, grant_id, funder, amount, token, None, memo);
 
             Ok(())
         })
@@ -1770,7 +2009,7 @@ impl StellarGrantsContract {
         let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
             .ok_or(ContractError::MilestoneNotFound)?;
 
-        if milestone.state != MilestoneState::CommunityReview {
+        if milestone.state() != MilestoneState::CommunityReview {
             return Err(ContractError::InvalidState);
         }
         if Storage::has_milestone_upvote(&env, grant_id, milestone_idx, &voter) {
@@ -1818,7 +2057,7 @@ impl StellarGrantsContract {
         let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
             .ok_or(ContractError::MilestoneNotFound)?;
 
-        if milestone.state != MilestoneState::CommunityReview {
+        if milestone.state() != MilestoneState::CommunityReview {
             return Err(ContractError::InvalidState);
         }
 
@@ -1990,6 +2229,14 @@ impl StellarGrantsContract {
     /// Retrieve a grant by its ID
     pub fn get_grant(env: Env, grant_id: u64) -> Result<Grant, ContractError> {
         Storage::get_grant(&env, grant_id).ok_or(ContractError::GrantNotFound)
+    }
+
+    /// Return the contributor profile for `contributor`, or `None` if not registered.
+    pub fn get_contributor_profile(
+        env: Env,
+        contributor: Address,
+    ) -> Option<crate::types::ContributorProfile> {
+        Storage::get_contributor(&env, contributor)
     }
 
     /// Return a paginated list of grant IDs that currently hold `status`.
@@ -2274,10 +2521,18 @@ impl StellarGrantsContract {
                     grant_id,
                     funder.clone(),
                     amount,
-                    token,
+                    token.clone(),
                     new_balance,
                 );
-                Events::emit_payer_receipt(&env, grant_id, funder.clone(), amount, None);
+                Events::emit_payer_receipt(
+                    &env,
+                    grant_id,
+                    funder.clone(),
+                    amount,
+                    token,
+                    None,
+                    None,
+                );
             }
 
             Ok(())
@@ -2372,13 +2627,13 @@ impl StellarGrantsContract {
                 .ok_or(ContractError::MilestoneNotFound)?;
 
             // In older flows resolving dispute might set state to Approved, accept both
-            if milestone.state != MilestoneState::AwaitingPayout
-                && milestone.state != MilestoneState::Approved
+            if milestone.state() != MilestoneState::AwaitingPayout
+                && milestone.state() != MilestoneState::Approved
             {
                 return Err(ContractError::InvalidState);
             }
 
-            if milestone.state == MilestoneState::AwaitingPayout
+            if milestone.state() == MilestoneState::AwaitingPayout
                 && env.ledger().timestamp() < milestone.status_updated_at + CHALLENGE_PERIOD
             {
                 return Err(ContractError::DeadlinePassed);
@@ -2403,10 +2658,15 @@ impl StellarGrantsContract {
                     .checked_sub(payout_amount)
                     .ok_or(ContractError::InvalidInput)?,
             );
-            grant.set_milestones_paid_out(grant.milestones_paid_out() + 1);
+            grant.set_milestones_paid_out(
+                grant
+                    .milestones_paid_out()
+                    .checked_add(1)
+                    .ok_or(ContractError::InvalidInput)?,
+            );
             Storage::set_grant(&env, grant_id, &grant);
 
-            milestone.state = MilestoneState::Paid;
+            milestone.set_state(MilestoneState::Paid);
             milestone.status_updated_at = env.ledger().timestamp();
 
             Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
@@ -2425,6 +2685,14 @@ impl StellarGrantsContract {
                 grant.owner.clone(),
                 payout_amount,
                 payout_token.clone(),
+            );
+            Events::emit_payee_receipt(
+                &env,
+                grant_id,
+                grant.owner.clone(),
+                payout_token.clone(),
+                payout_amount,
+                Some(milestone_idx),
             );
 
             // Update contributor reputation when paid
@@ -2473,11 +2741,11 @@ impl StellarGrantsContract {
         let mut milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
             .ok_or(ContractError::MilestoneNotFound)?;
 
-        if milestone.state != MilestoneState::AwaitingPayout {
+        if milestone.state() != MilestoneState::AwaitingPayout {
             return Err(ContractError::InvalidState);
         }
 
-        milestone.state = MilestoneState::Challenged;
+        milestone.set_state(MilestoneState::Challenged);
         milestone.status_updated_at = env.ledger().timestamp();
 
         Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
@@ -2486,6 +2754,50 @@ impl StellarGrantsContract {
         Events::milestone_challenged(&env, grant_id, milestone_idx, funder, reason);
 
         Ok(())
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    /// Issue #151: Increment a contributor's `reputation_score` and `total_earned`
+    /// after a successful milestone payout.  Idempotent per milestone — repeated calls
+    /// on the same (grant_id, milestone_idx) pair are silently ignored.
+    fn update_contributor_reputation(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        contributor: &Address,
+        payout_amount: i128,
+    ) {
+        // Guard: apply at most once per milestone
+        if Storage::has_milestone_reputation_applied(env, grant_id, milestone_idx) {
+            return;
+        }
+        Storage::mark_milestone_reputation_applied(env, grant_id, milestone_idx);
+
+        let reputation_gain: u64 = 10;
+
+        let mut profile = match Storage::get_contributor(env, contributor.clone()) {
+            Some(p) => p,
+            None => {
+                // Contributor has not registered a profile — skip silently as
+                // the issue specifies this as an acceptable fallback.
+                return;
+            }
+        };
+
+        profile.reputation_score = profile.reputation_score.saturating_add(reputation_gain);
+        profile.total_earned = profile.total_earned.saturating_add(payout_amount);
+
+        Storage::set_contributor(env, contributor.clone(), &profile);
+
+        Events::emit_reputation_updated(
+            env,
+            grant_id,
+            milestone_idx,
+            contributor.clone(),
+            profile.reputation_score,
+            profile.total_earned,
+        );
     }
 }
 
@@ -2534,10 +2846,10 @@ fn apply_milestone_submission(
     let mut milestone = Storage::get_milestone(env, grant_id, milestone_idx)
         .ok_or(ContractError::MilestoneNotFound)?;
 
-    if milestone.state == MilestoneState::CommunityReview
-        || milestone.state == MilestoneState::Submitted
-        || milestone.state == MilestoneState::Approved
-        || milestone.state == MilestoneState::Paid
+    if milestone.state() == MilestoneState::CommunityReview
+        || milestone.state() == MilestoneState::Submitted
+        || milestone.state() == MilestoneState::Approved
+        || milestone.state() == MilestoneState::Paid
     {
         return Err(ContractError::MilestoneAlreadySubmitted);
     }
@@ -2549,7 +2861,7 @@ fn apply_milestone_submission(
 
     milestone.description = description.clone();
     // Milestone enters the community review window before official voting opens.
-    milestone.state = MilestoneState::CommunityReview;
+    milestone.set_state(MilestoneState::CommunityReview);
     milestone.proof_url = Some(proof_url);
     if let Some(token) = payout_token {
         milestone.payout_token = token;

@@ -715,12 +715,21 @@ impl Events {
         event.publish(env);
     }
 
-    pub fn emit_payee_receipt(env: &Env, grant_id: u64, payee: Address, amount: i128) {
+    pub fn emit_payee_receipt(
+        env: &Env,
+        grant_id: u64,
+        recipient: Address,
+        token: Address,
+        amount: i128,
+        milestone_index: Option<u32>,
+    ) {
         let event = PayeeReceipt {
             event_version: EVENT_VERSION,
             grant_id,
-            payee,
+            recipient,
+            token,
             amount,
+            milestone_index,
             timestamp: env.ledger().timestamp(),
         };
         event.publish(env);
@@ -729,15 +738,19 @@ impl Events {
     pub fn emit_payer_receipt(
         env: &Env,
         grant_id: u64,
-        payer: Address,
+        recipient: Address,
         amount: i128,
+        token: Address,
+        milestone_index: Option<u32>,
         memo: Option<String>,
     ) {
         let event = PayerReceipt {
             event_version: EVENT_VERSION,
             grant_id,
-            payer,
+            recipient,
+            token,
             amount,
+            milestone_index,
             memo,
             timestamp: env.ledger().timestamp(),
         };
@@ -776,6 +789,102 @@ impl Events {
             event_version: EVENT_VERSION,
             grant_id,
             recipient,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    // ── Issue #152: dispute fee events ───────────────────────────────────────
+
+    pub fn emit_dispute_fee_charged(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        payer: Address,
+        fee_amount: i128,
+    ) {
+        let event = DisputeFeeCharged {
+            event_version: EVENT_VERSION,
+            grant_id,
+            milestone_idx,
+            payer,
+            fee_amount,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn emit_dispute_fee_refunded(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        recipient: Address,
+        fee_amount: i128,
+    ) {
+        let event = DisputeFeeRefunded {
+            event_version: EVENT_VERSION,
+            grant_id,
+            milestone_idx,
+            recipient,
+            fee_amount,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn emit_dispute_fee_slashed(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        treasury: Address,
+        fee_amount: i128,
+    ) {
+        let event = DisputeFeeSlashed {
+            event_version: EVENT_VERSION,
+            grant_id,
+            milestone_idx,
+            treasury,
+            fee_amount,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    // ── Issue #151: reputation event ─────────────────────────────────────────
+
+    pub fn emit_reputation_updated(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        contributor: Address,
+        new_reputation_score: u64,
+        total_earned: i128,
+    ) {
+        let event = ReputationUpdated {
+            event_version: EVENT_VERSION,
+            grant_id,
+            milestone_idx,
+            contributor,
+            new_reputation_score,
+            total_earned,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    // ── Issue #163: grant clawback event ─────────────────────────────────────
+
+    pub fn emit_grant_clawbacked(
+        env: &Env,
+        grant_id: u64,
+        council: Address,
+        total_clawed_back: i128,
+    ) {
+        let event = GrantClawbacked {
+            event_version: EVENT_VERSION,
+            grant_id,
+            council,
+            total_clawed_back,
             timestamp: env.ledger().timestamp(),
         };
         event.publish(env);
@@ -867,8 +976,10 @@ pub struct GrantResumed {
 pub struct PayeeReceipt {
     pub event_version: u32,
     pub grant_id: u64,
-    pub payee: Address,
+    pub recipient: Address,
+    pub token: Address,
     pub amount: i128,
+    pub milestone_index: Option<u32>,
     pub timestamp: u64,
 }
 
@@ -877,8 +988,10 @@ pub struct PayeeReceipt {
 pub struct PayerReceipt {
     pub event_version: u32,
     pub grant_id: u64,
-    pub payer: Address,
+    pub recipient: Address,
+    pub token: Address,
     pub amount: i128,
+    pub milestone_index: Option<u32>,
     pub memo: Option<String>,
     pub timestamp: u64,
 }
@@ -913,5 +1026,67 @@ pub struct GrantAccepted {
     pub event_version: u32,
     pub grant_id: u64,
     pub recipient: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when the dispute fee is deducted from the disputing party (issue #152).
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisputeFeeCharged {
+    pub event_version: u32,
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub payer: Address,
+    pub fee_amount: i128,
+    pub timestamp: u64,
+}
+
+/// Emitted when the dispute fee is refunded to the winning disputing party (issue #152).
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisputeFeeRefunded {
+    pub event_version: u32,
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub recipient: Address,
+    pub fee_amount: i128,
+    pub timestamp: u64,
+}
+
+/// Emitted when the dispute fee is sent to the treasury after a dismissed dispute (issue #152).
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisputeFeeSlashed {
+    pub event_version: u32,
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub treasury: Address,
+    pub fee_amount: i128,
+    pub timestamp: u64,
+}
+
+/// Emitted when a contributor's reputation increases after a milestone payout (issue #151).
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReputationUpdated {
+    pub event_version: u32,
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub contributor: Address,
+    pub new_reputation_score: u64,
+    pub total_earned: i128,
+    pub timestamp: u64,
+}
+
+/// Emitted when the DAO Council claws back escrowed funds from a fraudulent grant (issue #163).
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GrantClawbacked {
+    pub event_version: u32,
+    pub grant_id: u64,
+    /// The council address that initiated the clawback.
+    pub council: Address,
+    /// Total amount returned across all tokens.
+    pub total_clawed_back: i128,
     pub timestamp: u64,
 }

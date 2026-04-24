@@ -49,6 +49,10 @@ pub enum ContractError {
     TooManyTags = 35,
     /// A tag exceeds 20 characters.
     TagTooLong = 36,
+    /// Caller has insufficient balance to pay the dispute fee.
+    DisputeFeeInsufficient = 37,
+    /// Dispute fee has already been charged for this milestone.
+    DisputeAlreadyCharged = 38,
 }
 
 #[contracttype]
@@ -71,10 +75,66 @@ pub enum EscrowLifecycleState {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EscrowState {
-    pub mode: EscrowMode,
-    pub lifecycle: EscrowLifecycleState,
-    pub quorum_ready: bool,
-    pub approvals_count: u32,
+    pub packed_stats: u128,
+}
+
+impl EscrowState {
+    pub fn new(
+        mode: EscrowMode,
+        lifecycle: EscrowLifecycleState,
+        quorum_ready: bool,
+        approvals_count: u32,
+    ) -> Self {
+        let mut state = Self { packed_stats: 0 };
+        state.set_mode(mode);
+        state.set_lifecycle(lifecycle);
+        state.set_quorum_ready(quorum_ready);
+        state.set_approvals_count(approvals_count);
+        state
+    }
+
+    pub fn mode(&self) -> EscrowMode {
+        match (self.packed_stats & 0xFFFFFFFF) as u32 {
+            1 => EscrowMode::Standard,
+            2 => EscrowMode::HighSecurity,
+            _ => EscrowMode::Standard,
+        }
+    }
+
+    pub fn set_mode(&mut self, mode: EscrowMode) {
+        self.packed_stats = (self.packed_stats & !0xFFFFFFFF) | (mode as u32 as u128);
+    }
+
+    pub fn lifecycle(&self) -> EscrowLifecycleState {
+        match ((self.packed_stats >> 32) & 0xFFFFFFFF) as u32 {
+            1 => EscrowLifecycleState::Funding,
+            2 => EscrowLifecycleState::AwaitingMultisig,
+            3 => EscrowLifecycleState::Released,
+            _ => EscrowLifecycleState::Funding,
+        }
+    }
+
+    pub fn set_lifecycle(&mut self, lifecycle: EscrowLifecycleState) {
+        self.packed_stats =
+            (self.packed_stats & !(0xFFFFFFFF << 32)) | ((lifecycle as u32 as u128) << 32);
+    }
+
+    pub fn quorum_ready(&self) -> bool {
+        ((self.packed_stats >> 64) & 1) != 0
+    }
+
+    pub fn set_quorum_ready(&mut self, ready: bool) {
+        let b = if ready { 1u128 } else { 0u128 };
+        self.packed_stats = (self.packed_stats & !(1 << 64)) | (b << 64);
+    }
+
+    pub fn approvals_count(&self) -> u32 {
+        ((self.packed_stats >> 96) & 0xFFFFFFFF) as u32
+    }
+
+    pub fn set_approvals_count(&mut self, count: u32) {
+        self.packed_stats = (self.packed_stats & !(0xFFFFFFFF << 96)) | ((count as u128) << 96);
+    }
 }
 
 #[contracttype]
@@ -115,8 +175,8 @@ pub struct Milestone {
 }
 
 impl Milestone {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        idx: u32,
         description: String,
         amount: i128,
         payout_token: Address,
@@ -128,6 +188,7 @@ impl Milestone {
         submission_timestamp: u64,
         deadline: u64,
         community_comments: Map<Address, String>,
+        idx: u32,
         approvals: u32,
         rejections: u32,
         community_upvotes: u32,
@@ -160,9 +221,18 @@ impl Milestone {
         self.packed_stats = (self.packed_stats & !0xFFFFFFFF) | (val as u128);
     }
 
+    pub fn state(&self) -> MilestoneState {
+        self.state
+    }
+
+    pub fn set_state(&mut self, state: MilestoneState) {
+        self.state = state;
+    }
+
     pub fn approvals(&self) -> u32 {
         ((self.packed_stats >> 32) & 0xFFFFFFFF) as u32
     }
+
     pub fn set_approvals(&mut self, val: u32) {
         self.packed_stats = (self.packed_stats & !(0xFFFFFFFF << 32)) | ((val as u128) << 32);
     }
@@ -170,6 +240,7 @@ impl Milestone {
     pub fn rejections(&self) -> u32 {
         ((self.packed_stats >> 64) & 0xFFFFFFFF) as u32
     }
+
     pub fn set_rejections(&mut self, val: u32) {
         self.packed_stats = (self.packed_stats & !(0xFFFFFFFF << 64)) | ((val as u128) << 64);
     }
@@ -177,6 +248,7 @@ impl Milestone {
     pub fn community_upvotes(&self) -> u32 {
         ((self.packed_stats >> 96) & 0xFFFFFFFF) as u32
     }
+
     pub fn set_community_upvotes(&mut self, val: u32) {
         self.packed_stats = (self.packed_stats & !(0xFFFFFFFF << 96)) | ((val as u128) << 96);
     }
@@ -232,22 +304,23 @@ pub struct Grant {
     pub last_heartbeat: u64,
     pub min_funding: i128,
     pub hard_cap: i128,
-    pub tags: Vec<Symbol>,
+    pub tags: Vec<String>,
     /// Packed fields (u32 each): status, quorum, total_milestones, milestones_paid_out
     pub packed_config: u128,
 }
 
 impl Grant {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: u64,
         owner: Address,
         title: String,
         description: String,
         primary_token: Address,
-        status: GrantStatus,
         total_amount: i128,
         milestone_amount: i128,
         reviewers: Vec<Address>,
+        status: GrantStatus,
         quorum: u32,
         total_milestones: u32,
         milestones_paid_out: u32,
@@ -258,10 +331,10 @@ impl Grant {
         last_heartbeat: u64,
         min_funding: i128,
         hard_cap: i128,
-        tags: Vec<Symbol>,
+        tags: Vec<String>,
         cancellation_requested_at: Option<u64>,
     ) -> Self {
-        let mut grant = Self {
+        let mut g = Self {
             id,
             owner,
             title,
@@ -274,23 +347,22 @@ impl Grant {
             funders,
             reason,
             timestamp,
+            cancellation_requested_at,
             last_heartbeat,
             min_funding,
             hard_cap,
             tags,
-            cancellation_requested_at,
             packed_config: 0,
         };
-        grant.set_status(status);
-        grant.set_quorum(quorum);
-        grant.set_total_milestones(total_milestones);
-        grant.set_milestones_paid_out(milestones_paid_out);
-        grant
+        g.set_status(status);
+        g.set_quorum(quorum);
+        g.set_total_milestones(total_milestones);
+        g.set_milestones_paid_out(milestones_paid_out);
+        g
     }
 
     pub fn status(&self) -> GrantStatus {
-        let val = (self.packed_config & 0xFFFFFFFF) as u32;
-        match val {
+        match (self.packed_config & 0xFFFFFFFF) as u32 {
             1 => GrantStatus::Active,
             2 => GrantStatus::Cancelled,
             3 => GrantStatus::Completed,
@@ -299,33 +371,36 @@ impl Grant {
             6 => GrantStatus::Inactive,
             7 => GrantStatus::PendingFunding,
             8 => GrantStatus::PendingAcceptance,
-            _ => GrantStatus::Active, // Fallback
+            _ => GrantStatus::Active,
         }
     }
+
     pub fn set_status(&mut self, status: GrantStatus) {
-        let val = status as u32;
-        self.packed_config = (self.packed_config & !0xFFFFFFFF) | (val as u128);
+        self.packed_config = (self.packed_config & !0xFFFFFFFF) | (status as u32 as u128);
     }
 
     pub fn quorum(&self) -> u32 {
         ((self.packed_config >> 32) & 0xFFFFFFFF) as u32
     }
-    pub fn set_quorum(&mut self, val: u32) {
-        self.packed_config = (self.packed_config & !(0xFFFFFFFF << 32)) | ((val as u128) << 32);
+
+    pub fn set_quorum(&mut self, quorum: u32) {
+        self.packed_config = (self.packed_config & !(0xFFFFFFFF << 32)) | ((quorum as u128) << 32);
     }
 
     pub fn total_milestones(&self) -> u32 {
         ((self.packed_config >> 64) & 0xFFFFFFFF) as u32
     }
-    pub fn set_total_milestones(&mut self, val: u32) {
-        self.packed_config = (self.packed_config & !(0xFFFFFFFF << 64)) | ((val as u128) << 64);
+
+    pub fn set_total_milestones(&mut self, total: u32) {
+        self.packed_config = (self.packed_config & !(0xFFFFFFFF << 64)) | ((total as u128) << 64);
     }
 
     pub fn milestones_paid_out(&self) -> u32 {
         ((self.packed_config >> 96) & 0xFFFFFFFF) as u32
     }
-    pub fn set_milestones_paid_out(&mut self, val: u32) {
-        self.packed_config = (self.packed_config & !(0xFFFFFFFF << 96)) | ((val as u128) << 96);
+
+    pub fn set_milestones_paid_out(&mut self, paid: u32) {
+        self.packed_config = (self.packed_config & !(0xFFFFFFFF << 96)) | ((paid as u128) << 96);
     }
 }
 
@@ -341,4 +416,14 @@ pub struct ContributorProfile {
     pub reputation_score: u64,
     pub grants_count: u32,
     pub total_earned: i128,
+}
+
+/// Stores who paid the dispute fee and how much, so it can be refunded or slashed
+/// when the dispute is resolved.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisputeInfo {
+    pub payer: Address,
+    pub fee_amount: i128,
+    pub fee_token: Address,
 }
