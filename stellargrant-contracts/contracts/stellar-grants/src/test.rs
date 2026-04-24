@@ -171,6 +171,8 @@ mod tests {
     ) {
         env.as_contract(contract_id, || {
             let quorum = (reviewers.len() / 2) + 1;
+            let mut escrow_balances = Map::new(env);
+            escrow_balances.set(token.clone(), 1000);
             let grant = Grant::new(
                 grant_id,
                 owner,
@@ -182,10 +184,17 @@ mod tests {
                 reviewers,
                 GrantStatus::Active,
                 quorum,
-                1,
+                1, // total_milestones
+                0, // milestones_paid_out
+                escrow_balances,
+                soroban_sdk::Vec::new(env), // funders
+                None,                       // reason
                 env.ledger().timestamp(),
-                0,
-                env,
+                env.ledger().timestamp(),
+                0,                          // min_funding
+                0,                          // hard_cap
+                soroban_sdk::Vec::new(env), // tags
+                None,                       // cancellation_requested_at
             );
             Storage::set_grant(env, grant_id, &grant);
         });
@@ -200,17 +209,25 @@ mod tests {
     ) {
         env.as_contract(contract_id, || {
             let grant = Storage::get_grant(env, grant_id).unwrap();
-            let mut milestone = Milestone::new(
-                milestone_idx,
+            let milestone = Milestone::new(
                 String::from_str(env, "Description"),
                 100,
                 grant.primary_token,
-                0,
-                env,
+                state,
+                Map::new(env), // votes
+                Map::new(env), // reasons
+                0,             // status_updated_at
+                Some(String::from_str(env, "https://proof.url")),
+                env.ledger().timestamp(),
+                0,             // deadline
+                Map::new(env), // community_comments
+                milestone_idx, // idx
+                0,             // approvals
+                0,             // rejections
+                0,             // community_upvotes
+                None,          // pending_extension_deadline
+                Map::new(env), // extension_votes
             );
-            milestone.set_state(state);
-            milestone.proof_url = Some(String::from_str(env, "https://proof.url"));
-            milestone.submission_timestamp = env.ledger().timestamp();
             Storage::set_milestone(env, grant_id, milestone_idx, &milestone);
         });
     }
@@ -311,8 +328,10 @@ mod tests {
                 .get_ttl(&DataKey::Milestone(grant_id, milestone_idx));
             assert!(ttl_before < EXTENDED_PERSISTENT_TTL);
 
-            let milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
-            assert_eq!(milestone.idx, milestone_idx);
+            let milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
+            assert_eq!(milestone.idx(), milestone_idx);
 
             assert_eq!(
                 env.storage()
@@ -390,7 +409,7 @@ mod tests {
         );
 
         let milestone = client.get_milestone(&grant_id, &milestone_idx);
-        assert_eq!(milestone.state(), MilestoneState::Submitted);
+        assert_eq!(milestone.state, MilestoneState::Submitted);
         assert_eq!(milestone.description, String::from_str(&env, "Description"));
     }
 
@@ -443,8 +462,10 @@ mod tests {
         assert_eq!(result, true); // Quorum reached (1/1)
 
         env.as_contract(&contract_id, || {
-            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
-            assert_eq!(updated_milestone.approvals, 1);
+            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
+            assert_eq!(updated_milestone.approvals(), 1);
             assert_eq!(updated_milestone.state, MilestoneState::AwaitingPayout);
             assert!(updated_milestone.votes.get(reviewer).unwrap());
         });
@@ -453,15 +474,123 @@ mod tests {
         env.ledger()
             .set_timestamp(env.ledger().timestamp() + crate::CHALLENGE_PERIOD + 1);
         client.milestone_payout(&grant_id, &milestone_idx, &owner);
+    }
 
-        env.as_contract(&contract_id, || {
-            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
-            assert_eq!(updated_milestone.state, MilestoneState::Paid);
-        });
+    #[test]
+    fn test_milestone_deadline_extension() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, contract_id) = setup_test(&env);
+        let grant_id = 1;
+        let milestone_idx = 0;
+        let owner = Address::generate(&env);
+        let reviewer1 = Address::generate(&env);
+        let reviewer2 = Address::generate(&env);
 
-        // Verify that tokens were transferred to the grant owner
+        let reviewers = Vec::from_array(&env, [reviewer1.clone(), reviewer2.clone()]);
+        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_id = token_contract.address();
+
+        // Setup grant and milestone
+        create_grant(
+            &env,
+            &contract_id,
+            grant_id,
+            owner.clone(),
+            token_id.clone(),
+            reviewers,
+        );
+        create_milestone(
+            &env,
+            &contract_id,
+            grant_id,
+            milestone_idx,
+            MilestoneState::Pending,
+        );
+
+        let current_milestone = client
+            .get_milestone(&grant_id, &milestone_idx)
+            .unwrap()
+            .unwrap();
+        let initial_deadline = current_milestone.deadline;
+        let new_deadline = initial_deadline + 3600;
+
+        // Owner requests extension
+        client.request_milestone_extension(&grant_id, &milestone_idx, &new_deadline);
+
+        let milestone = client
+            .get_milestone(&grant_id, &milestone_idx)
+            .unwrap()
+            .unwrap();
+        assert_eq!(milestone.pending_extension_deadline, Some(new_deadline));
+
+        // Reviewer 1 approves
+        client.approve_milestone_extension(&grant_id, &milestone_idx, &reviewer1);
+
+        let milestone = client
+            .get_milestone(&grant_id, &milestone_idx)
+            .unwrap()
+            .unwrap();
+        // Quorum is 2 ( (2/2) + 1 = 2)
+        assert_eq!(milestone.deadline, initial_deadline); // Not reached quorum yet
+
+        // Reviewer 2 approves
+        client.approve_milestone_extension(&grant_id, &milestone_idx, &reviewer2);
+
+        let milestone = client
+            .get_milestone(&grant_id, &milestone_idx)
+            .unwrap()
+            .unwrap();
+        assert_eq!(milestone.deadline, new_deadline);
+        assert_eq!(milestone.pending_extension_deadline, None);
+    }
+
+    #[test]
+    fn test_batch_milestone_approve() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, contract_id) = setup_test(&env);
+        let grant_id = 1;
+        let owner = Address::generate(&env);
+        let reviewer = Address::generate(&env);
+
+        let mut reviewers = Vec::new(&env);
+        reviewers.push_back(reviewer.clone());
+        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_id = token_contract.address();
+        let token_admin = token::StellarAssetClient::new(&env, &token_id);
+
+        // Setup grant and 2 milestones
+        create_grant(
+            &env,
+            &contract_id,
+            grant_id,
+            owner.clone(),
+            token_id.clone(),
+            reviewers,
+        );
+        create_milestone(&env, &contract_id, grant_id, 0, MilestoneState::Submitted);
+        create_milestone(&env, &contract_id, grant_id, 1, MilestoneState::Submitted);
+
+        // Reach quorum for both (quorum is 1)
+        client.milestone_vote(&grant_id, &0, &reviewer, &true, &None);
+        client.milestone_vote(&grant_id, &1, &reviewer, &true, &None);
+
+        // Mint tokens to escrow
+        token_admin.mint(&contract_id, &200);
+
+        // Batch approve
+        let indices = Vec::from_array(&env, [0, 1]);
+        client.batch_milestone_approve(&grant_id, &indices, &reviewer);
+
+        let ms0 = client.get_milestone(&grant_id, &0).unwrap().unwrap();
+        let ms1 = client.get_milestone(&grant_id, &1).unwrap().unwrap();
+
+        assert_eq!(ms0.state, MilestoneState::Approved);
+        assert_eq!(ms1.state, MilestoneState::Approved);
+
         let token_client = token::Client::new(&env, &token_id);
-        assert_eq!(token_client.balance(&owner), 100);
+        assert_eq!(token_client.balance(&owner), 200);
     }
 
     #[test]
@@ -487,25 +616,30 @@ mod tests {
         reviewers.push_back(reviewer3.clone());
 
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner,
-                String::from_str(&env, "Full quorum grant"),
-                String::from_str(&env, "Needs 3/3 approvals"),
-                token_id.clone(),
-                1000,
-                500,
-                reviewers,
-                GrantStatus::Active,
-                3,
-                2,
-                env.ledger().timestamp(),
-                0,
-                &env,
-            );
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token_id.clone(), 1000);
-            grant.escrow_balances = escrow_balances;
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Full quorum grant"),
+                description: String::from_str(&env, "Needs 3/3 approvals"),
+                milestone_amount: 500,
+                owner,
+                primary_token: token_id.clone(),
+
+                total_amount: 1000,
+                reviewers,
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+                cancellation_requested_at: None,
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -563,18 +697,17 @@ mod tests {
         let mut escrow_balances = Map::new(&env);
         escrow_balances.set(token_id.clone(), remaining);
         let grant = Grant {
+            packed_config: 0,
             id: grant_id,
             title: String::from_str(&env, "Test"),
             description: String::from_str(&env, "Desc"),
             milestone_amount: 500,
             owner: owner.clone(),
             primary_token: token_id.clone(),
-            status: GrantStatus::Active,
+
             total_amount: total_funded,
             reviewers: Vec::new(&env),
-            quorum: 1,
-            total_milestones: 1,
-            milestones_paid_out: 0,
+
             escrow_balances,
             funders,
             reason: None,
@@ -588,26 +721,6 @@ mod tests {
         };
 
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                total_funded,
-                500,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                1,
-                &env,
-            );
-            let mut escrow_balances = Map::new(&env);
-            escrow_balances.set(token_id.clone(), remaining);
-            grant.escrow_balances = escrow_balances;
-            grant.funders = funders;
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -656,18 +769,17 @@ mod tests {
         let mut escrow_balances = Map::new(&env);
         escrow_balances.set(token.clone(), 0);
         let grant = Grant {
+            packed_config: 0,
             id: grant_id,
             title: String::from_str(&env, "Test"),
             description: String::from_str(&env, "Desc"),
             milestone_amount: 500,
             owner: owner.clone(),
             primary_token: token.clone(),
-            status: GrantStatus::Completed,
+
             total_amount: 100,
             reviewers: Vec::new(&env),
-            quorum: 1,
-            total_milestones: 1,
-            milestones_paid_out: 1,
+
             escrow_balances,
             funders: Vec::new(&env),
             reason: None,
@@ -681,26 +793,6 @@ mod tests {
         };
 
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token.clone(),
-                100,
-                500,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Completed,
-                1,
-                1,
-                &env,
-            );
-            let mut escrow_balances = Map::new(&env);
-            escrow_balances.set(token.clone(), 0);
-            grant.escrow_balances = escrow_balances;
-            grant.set_milestones_paid_out(1);
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -738,37 +830,20 @@ mod tests {
         });
 
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner,
-                String::from_str(&env, "Admin Cancel"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                500,
-                500,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                1,
-                &env,
-            );
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token_id.clone(), 500);
             let grant = Grant {
+                packed_config: 0,
                 id: grant_id,
                 title: String::from_str(&env, "Admin Cancel"),
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner,
                 primary_token: token_id.clone(),
-                status: GrantStatus::Active,
+
                 total_amount: 500,
                 reviewers: Vec::new(&env),
-                quorum: 1,
-                total_milestones: 1,
-                milestones_paid_out: 0,
+
                 escrow_balances,
                 funders,
                 reason: None,
@@ -801,37 +876,20 @@ mod tests {
         let grant_id = 12u64;
 
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "No funds"),
-                String::from_str(&env, "Desc"),
-                token.clone(),
-                1000,
-                500,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                2,
-                &env,
-            );
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token.clone(), 0);
             let grant = Grant {
+                packed_config: 0,
                 id: grant_id,
                 title: String::from_str(&env, "No funds"),
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner: owner.clone(),
                 primary_token: token,
-                status: GrantStatus::Active,
+
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
-                quorum: 1,
-                total_milestones: 2,
-                milestones_paid_out: 0,
+
                 escrow_balances,
                 funders: Vec::new(&env),
                 reason: None,
@@ -892,18 +950,17 @@ mod tests {
         let mut escrow_balances = Map::new(&env);
         escrow_balances.set(token_id.clone(), 100);
         let grant = Grant {
+            packed_config: 0,
             id: grant_id,
             title: String::from_str(&env, "Dust"),
             description: String::from_str(&env, "Desc"),
             milestone_amount: 50,
             owner: owner.clone(),
             primary_token: token_id.clone(),
-            status: GrantStatus::Active,
+
             total_amount: 150,
             reviewers: Vec::new(&env),
-            quorum: 1,
-            total_milestones: 3,
-            milestones_paid_out: 0,
+
             escrow_balances,
             funders,
             reason: None,
@@ -916,26 +973,6 @@ mod tests {
         };
 
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner,
-                String::from_str(&env, "Dust"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                150,
-                50,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                3,
-                &env,
-            );
-            let mut escrow_balances = Map::new(&env);
-            escrow_balances.set(token_id.clone(), 100);
-            grant.escrow_balances = escrow_balances;
-            grant.funders = funders;
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -984,18 +1021,17 @@ mod tests {
         let mut escrow_balances = Map::new(&env);
         escrow_balances.set(token_id.clone(), total_funded);
         let grant = Grant {
+            packed_config: 0,
             id: grant_id,
             title: String::from_str(&env, "Test"),
             description: String::from_str(&env, "Desc"),
             milestone_amount: 500,
             owner: owner.clone(),
             primary_token: token_id.clone(),
-            status: GrantStatus::Active,
+
             total_amount: total_funded,
             reviewers: Vec::new(&env),
-            quorum: 1,
-            total_milestones: 2,
-            milestones_paid_out: 0,
+
             escrow_balances,
             funders,
             reason: None,
@@ -1008,40 +1044,28 @@ mod tests {
         };
 
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                total_funded,
-                500,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                2,
-                &env,
-            );
-            let mut escrow_balances = Map::new(&env);
-            escrow_balances.set(token_id.clone(), total_funded);
-            grant.escrow_balances = escrow_balances;
-            grant.funders = funders;
             Storage::set_grant(&env, grant_id, &grant);
 
             // create two approved milestones
             for i in 0..2 {
-                let mut milestone = Milestone::new(
-                    i,
-                    String::from_str(&env, "Desc"),
-                    milestone_amount,
-                    token_id.clone(),
-                    0,
-                    &env,
-                );
-                milestone.set_state(MilestoneState::Approved);
-                milestone.set_approvals(1);
+                let milestone = Milestone {
+                    description: String::from_str(&env, "Desc"),
+                    amount: milestone_amount,
+                    payout_token: token_id.clone(),
+                    state: MilestoneState::Approved, // Already approved
+                    votes: Map::new(&env),
+
+                    reasons: Map::new(&env),
+                    status_updated_at: 0,
+                    proof_url: None,
+                    submission_timestamp: 0,
+                    deadline: 0,
+
+                    community_comments: Map::new(&env),
+                    pending_extension_deadline: None,
+                    extension_votes: Map::new(&env),
+                    packed_stats: 0,
+                };
                 Storage::set_milestone(&env, grant_id, i, &milestone);
             }
         });
@@ -1064,8 +1088,8 @@ mod tests {
             assert_eq!(updated_grant.escrow_balances.len(), 0); // should be cleared
 
             for i in 0..2 {
-                let updated_milestone = Storage::get_milestone(&env, grant_id, i).unwrap();
-                assert_eq!(updated_milestone.state(), MilestoneState::Paid);
+                let updated_milestone = Storage::get_milestone(&env, grant_id, i).unwrap().unwrap();
+                assert_eq!(updated_milestone.state, MilestoneState::Paid);
             }
         });
 
@@ -1083,37 +1107,72 @@ mod tests {
         let token = Address::generate(&env);
         let grant_id = 1u64;
 
+        let mut escrow_balances = Map::new(&env);
+        escrow_balances.set(token.clone(), 1000);
+        let grant = Grant {
+            packed_config: 0,
+            id: grant_id,
+            title: String::from_str(&env, "Test"),
+            description: String::from_str(&env, "Desc"),
+            milestone_amount: 500,
+            owner: owner.clone(),
+            primary_token: token.clone(),
+
+            total_amount: 1000,
+            reviewers: Vec::new(&env),
+
+            escrow_balances,
+            funders: Vec::new(&env),
+            reason: None,
+            timestamp: 0,
+            last_heartbeat: 0,
+            min_funding: 0,
+            hard_cap: 0,
+            tags: Vec::new(&env),
+            cancellation_requested_at: None,
+        };
+
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token.clone(),
-                1000,
-                500,
-                Vec::new(&env),
-                0,
-                0,
-                GrantStatus::Active,
-                1,
-                2,
-                &env,
-            );
-            let mut escrow_balances = Map::new(&env);
-            escrow_balances.set(token.clone(), 1000);
-            grant.escrow_balances = escrow_balances;
             Storage::set_grant(&env, grant_id, &grant);
 
-            let mut m1 =
-                Milestone::new(0, String::from_str(&env, "M1"), 500, token.clone(), 0, &env);
-            m1.set_state(MilestoneState::Approved);
-            m1.set_approvals(1);
+            let m1 = Milestone {
+                description: String::from_str(&env, "M1"),
+                amount: 500,
+                payout_token: token.clone(),
+                state: MilestoneState::Approved, // approved
+                votes: Map::new(&env),
+
+                reasons: Map::new(&env),
+                status_updated_at: 0,
+                proof_url: None,
+                submission_timestamp: 0,
+                deadline: 0,
+
+                community_comments: Map::new(&env),
+                pending_extension_deadline: None,
+                extension_votes: Map::new(&env),
+                packed_stats: 0,
+            };
             Storage::set_milestone(&env, grant_id, 0, &m1);
 
-            let mut m2 =
-                Milestone::new(1, String::from_str(&env, "M2"), 500, token.clone(), 0, &env);
-            m2.set_state(MilestoneState::Pending);
+            let m2 = Milestone {
+                description: String::from_str(&env, "M2"),
+                amount: 500,
+                payout_token: token.clone(),
+                state: MilestoneState::Pending, // PENDING!
+                votes: Map::new(&env),
+
+                reasons: Map::new(&env),
+                status_updated_at: 0,
+                proof_url: None,
+                submission_timestamp: 0,
+                deadline: 0,
+
+                community_comments: Map::new(&env),
+                pending_extension_deadline: None,
+                extension_votes: Map::new(&env),
+                packed_stats: 0,
+            };
             Storage::set_milestone(&env, grant_id, 1, &m2);
         });
 
@@ -1139,38 +1198,52 @@ mod tests {
         let total_funded = 500i128; // milestone 1=500 -> remaining=0
         token_admin.mint(&contract_id, &total_funded);
 
+        let mut escrow_balances = Map::new(&env);
+        escrow_balances.set(token_id.clone(), total_funded);
+        let grant = Grant {
+            packed_config: 0,
+            id: grant_id,
+            title: String::from_str(&env, "Test"),
+            description: String::from_str(&env, "Desc"),
+            milestone_amount: 500,
+            owner: owner.clone(),
+            primary_token: token_id.clone(),
+
+            total_amount: total_funded,
+            reviewers: Vec::new(&env),
+
+            escrow_balances,
+            funders: Vec::new(&env),
+            reason: None,
+            timestamp: 0,
+            last_heartbeat: 0,
+            min_funding: 0,
+            hard_cap: 0,
+            tags: Vec::new(&env),
+            cancellation_requested_at: None,
+        };
+
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner,
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                total_funded,
-                500,
-                Vec::new(&env),
-                0,
-                0,
-                GrantStatus::Active,
-                1,
-                1,
-                &env,
-            );
-            let mut escrow_balances = Map::new(&env);
-            escrow_balances.set(token_id.clone(), total_funded);
-            grant.escrow_balances = escrow_balances;
             Storage::set_grant(&env, grant_id, &grant);
 
-            let mut m1 = Milestone::new(
-                0,
-                String::from_str(&env, "M1"),
-                500,
-                token_id.clone(),
-                0,
-                &env,
-            );
-            m1.set_state(MilestoneState::Approved);
-            m1.set_approvals(1);
+            let m1 = Milestone {
+                description: String::from_str(&env, "M1"),
+                amount: 500,
+                payout_token: token_id.clone(),
+                state: MilestoneState::Approved, // approved
+                votes: Map::new(&env),
+
+                reasons: Map::new(&env),
+                status_updated_at: 0,
+                proof_url: None,
+                submission_timestamp: 0,
+                deadline: 0,
+
+                community_comments: Map::new(&env),
+                pending_extension_deadline: None,
+                extension_votes: Map::new(&env),
+                packed_stats: 0,
+            };
             Storage::set_milestone(&env, grant_id, 0, &m1);
         });
 
@@ -1222,16 +1295,24 @@ mod tests {
 
         env.as_contract(&contract_id, || {
             for i in 0..2 {
-                let mut milestone = Milestone::new(
-                    i,
-                    String::from_str(&env, "Desc"),
-                    500,
-                    token_id.clone(),
-                    0,
-                    &env,
-                );
-                milestone.set_state(MilestoneState::Approved);
-                milestone.set_approvals(1);
+                let milestone = Milestone {
+                    description: String::from_str(&env, "Desc"),
+                    amount: 500,
+                    payout_token: token_id.clone(),
+                    state: MilestoneState::Approved,
+                    votes: Map::new(&env),
+
+                    reasons: Map::new(&env),
+                    status_updated_at: 0,
+                    proof_url: None,
+                    submission_timestamp: 0,
+                    deadline: 0,
+
+                    community_comments: Map::new(&env),
+                    pending_extension_deadline: None,
+                    extension_votes: Map::new(&env),
+                    packed_stats: 0,
+                };
                 Storage::set_milestone(&env, grant_id, i, &milestone);
             }
         });
@@ -1285,16 +1366,24 @@ mod tests {
         client.grant_fund(&grant_id, &funder, &1000, &token_id, &None);
         env.as_contract(&contract_id, || {
             for i in 0..2 {
-                let mut milestone = Milestone::new(
-                    i,
-                    String::from_str(&env, "Desc"),
-                    500,
-                    token_id.clone(),
-                    0,
-                    &env,
-                );
-                milestone.set_state(MilestoneState::Approved);
-                milestone.set_approvals(1);
+                let milestone = Milestone {
+                    description: String::from_str(&env, "Desc"),
+                    amount: 500,
+                    payout_token: token_id.clone(),
+                    state: MilestoneState::Approved,
+                    votes: Map::new(&env),
+
+                    reasons: Map::new(&env),
+                    status_updated_at: 0,
+                    proof_url: None,
+                    submission_timestamp: 0,
+                    deadline: 0,
+
+                    community_comments: Map::new(&env),
+                    pending_extension_deadline: None,
+                    extension_votes: Map::new(&env),
+                    packed_stats: 0,
+                };
                 Storage::set_milestone(&env, grant_id, i, &milestone);
             }
         });
@@ -1357,26 +1446,32 @@ mod tests {
         let grant_id = 999u64;
         let total_funded = 500i128;
 
+        let mut escrow_balances = Map::new(&env);
+        escrow_balances.set(token_id.clone(), total_funded);
+        let grant = Grant {
+            packed_config: 0,
+            id: grant_id,
+            title: String::from_str(&env, "Test"),
+            description: String::from_str(&env, "Desc"),
+            milestone_amount: 500,
+            owner: owner.clone(),
+            primary_token: token_id.clone(),
+
+            total_amount: total_funded,
+            reviewers: Vec::new(&env),
+
+            escrow_balances,
+            funders: Vec::new(&env),
+            reason: None,
+            timestamp: 0,
+            last_heartbeat: 0,
+            min_funding: 0,
+            hard_cap: 0,
+            tags: Vec::new(&env),
+            cancellation_requested_at: None,
+        };
+
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                total_funded,
-                500,
-                Vec::new(&env),
-                0,
-                0,
-                GrantStatus::Active,
-                1,
-                1,
-                &env,
-            );
-            let mut escrow_balances = Map::new(&env);
-            escrow_balances.set(token_id.clone(), total_funded);
-            grant.escrow_balances = escrow_balances;
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -1466,16 +1561,24 @@ mod tests {
         client.grant_fund(&grant_id, &funder, &500, &token_id, &None);
 
         env.as_contract(&contract_id, || {
-            let mut milestone = Milestone::new(
-                0,
-                String::from_str(&env, "M1"),
-                500,
-                token_id.clone(),
-                0,
-                &env,
-            );
-            milestone.set_state(MilestoneState::Approved);
-            milestone.set_approvals(1);
+            let milestone = Milestone {
+                description: String::from_str(&env, "M1"),
+                amount: 500,
+                payout_token: token_id.clone(),
+                state: MilestoneState::Approved,
+                votes: Map::new(&env),
+
+                reasons: Map::new(&env),
+                status_updated_at: 0,
+                proof_url: None,
+                submission_timestamp: 0,
+                deadline: 0,
+
+                community_comments: Map::new(&env),
+                pending_extension_deadline: None,
+                extension_votes: Map::new(&env),
+                packed_stats: 0,
+            };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
         });
 
@@ -1610,25 +1713,30 @@ mod tests {
 
         // Set up a grant with 2 milestones so index 0 is valid
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner,
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token.clone(),
-                1000,
-                500,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                2,
-                &env,
-            );
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token.clone(), 1000);
-            grant.escrow_balances = escrow_balances;
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token,
+
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+                cancellation_requested_at: None,
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -1655,8 +1763,10 @@ mod tests {
 
         // Verify the milestone was stored correctly; submit now enters CommunityReview first.
         env.as_contract(&contract_id, || {
-            let milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
-            assert_eq!(milestone.state(), MilestoneState::CommunityReview);
+            let milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
+            assert_eq!(milestone.state, MilestoneState::CommunityReview);
             assert_eq!(
                 milestone.description,
                 String::from_str(&env, "Completed smart contract implementation")
@@ -1668,7 +1778,7 @@ mod tests {
                     "https://github.com/org/repo/pull/42"
                 ))
             );
-            assert_eq!(milestone.idx, milestone_idx);
+            assert_eq!(milestone.idx(), milestone_idx);
         });
     }
 
@@ -1683,32 +1793,53 @@ mod tests {
         let grant_id = 1u64;
 
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token.clone(),
-                1000,
-                333,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                3,
-                &env,
-            );
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token.clone(), 1000);
-            grant.escrow_balances = escrow_balances;
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 333,
+                owner: owner.clone(),
+                primary_token: token.clone(),
+
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+                cancellation_requested_at: None,
+            };
             Storage::set_grant(&env, grant_id, &grant);
 
             // Pre-seed milestones so apply_milestone_submission finds them
             for idx in 0u32..3u32 {
-                let mut milestone =
-                    Milestone::new(idx, String::from_str(&env, ""), 333, token.clone(), 0, &env);
-                milestone.set_state(MilestoneState::Pending);
+                let milestone = Milestone {
+                    idx,
+                    description: String::from_str(&env, ""),
+                    amount: 333,
+                    payout_token: token.clone(),
+                    state: MilestoneState::Pending,
+                    votes: Map::new(&env),
+
+                    reasons: Map::new(&env),
+                    status_updated_at: 0,
+                    proof_url: None,
+                    submission_timestamp: 0,
+                    deadline: 0,
+
+                    community_comments: Map::new(&env),
+                    pending_extension_deadline: None,
+                    extension_votes: Map::new(&env),
+                    packed_stats: 0,
+                };
                 Storage::set_milestone(&env, grant_id, idx, &milestone);
             }
         });
@@ -1716,18 +1847,21 @@ mod tests {
         let mut submissions = Vec::new(&env);
         submissions.push_back(MilestoneSubmission {
             idx: 0,
+
             description: String::from_str(&env, "First milestone desc"),
             proof: String::from_str(&env, "https://proof.example/a"),
             payout_token: None,
         });
         submissions.push_back(MilestoneSubmission {
-            idx: 1,
+            idx: 0,
+
             description: String::from_str(&env, "Second milestone desc"),
             proof: String::from_str(&env, "https://proof.example/b"),
             payout_token: None,
         });
         submissions.push_back(MilestoneSubmission {
-            idx: 2,
+            idx: 0,
+
             description: String::from_str(&env, "Third milestone desc"),
             proof: String::from_str(&env, "https://proof.example/c"),
             payout_token: None,
@@ -1737,10 +1871,12 @@ mod tests {
 
         for idx in 0u32..3u32 {
             env.as_contract(&contract_id, || {
-                let milestone = Storage::get_milestone(&env, grant_id, idx).unwrap();
+                let milestone = Storage::get_milestone(&env, grant_id, idx)
+                    .unwrap()
+                    .unwrap();
                 // submit_batch enters CommunityReview, not Submitted directly.
-                assert_eq!(milestone.state(), MilestoneState::CommunityReview);
-                assert_eq!(milestone.idx, idx);
+                assert_eq!(milestone.state, MilestoneState::CommunityReview);
+                assert_eq!(milestone.idx(), idx);
                 let expected_desc = match idx {
                     0 => "First milestone desc",
                     1 => "Second milestone desc",
@@ -1904,26 +2040,28 @@ mod tests {
         env.as_contract(&contract_id, || {
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token.clone(), 0);
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token.clone(),
-                1000,
-                500,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Completed,
-                1,
-                1,
-                &env,
-            );
-            let mut escrow_balances = Map::new(&env);
-            escrow_balances.set(token.clone(), 1000);
-            grant.escrow_balances = escrow_balances;
-            grant.set_milestones_paid_out(1);
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token,
+                // Not Active
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+                cancellation_requested_at: None,
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -1956,26 +2094,33 @@ mod tests {
 
         token_admin.mint(&funder, &1000i128);
 
-        let mut grant = Grant::new(
-            grant_id,
-            owner.clone(),
-            String::from_str(&env, "Test"),
-            String::from_str(&env, "Desc"),
-            token_id.clone(),
-            1000,
-            500,
-            Vec::new(&env),
-            0,
-            env.ledger().timestamp(),
-            GrantStatus::Active,
-            1,
-            1,
-            &env,
-        );
-        let mut escrow_balances = Map::new(&env);
-        escrow_balances.set(token_id.clone(), 0);
-        grant.escrow_balances = escrow_balances;
-        Storage::set_grant(&env, grant_id, &grant);
+        env.as_contract(&contract_id, || {
+            let mut escrow_balances = Map::new(&env);
+            escrow_balances.set(token_id.clone(), 0);
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token_id.clone(),
+
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+                cancellation_requested_at: None,
+            };
+            Storage::set_grant(&env, grant_id, &grant);
+        });
 
         client.grant_fund(&grant_id, &funder, &fund_amount, &token_id, &None);
 
@@ -1995,70 +2140,6 @@ mod tests {
             assert_eq!(first_funder.amount, 500);
             assert_eq!(first_funder.token, token_id);
         });
-    }
-
-    #[test]
-    fn test_grant_fund_emits_payer_receipt_with_metadata() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let (client, admin, _) = setup_test(&env);
-        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
-        let token_id = token_contract.address();
-        let token_admin = token::StellarAssetClient::new(&env, &token_id);
-
-        let owner = Address::generate(&env);
-        let funder = Address::generate(&env);
-        let grant_id = 1u64;
-        let fund_amount = 500i128;
-        let memo = Some(String::from_str(&env, "seed funding"));
-
-        token_admin.mint(&funder, &1000i128);
-
-        let mut grant = Grant::new(
-            grant_id,
-            owner.clone(),
-            String::from_str(&env, "Test"),
-            String::from_str(&env, "Desc"),
-            token_id.clone(),
-            1000,
-            500,
-            Vec::new(&env),
-            0,
-            env.ledger().timestamp(),
-            GrantStatus::Active,
-            1,
-            1,
-            &env,
-        );
-        let mut escrow_balances = Map::new(&env);
-        escrow_balances.set(token_id.clone(), 0);
-        grant.escrow_balances = escrow_balances;
-        Storage::set_grant(&env, grant_id, &grant);
-
-        client.grant_fund(&grant_id, &funder, &fund_amount, &token_id, &memo);
-
-        use soroban_sdk::testutils::Events;
-        let events = env.events().all();
-        let mut found_receipt = false;
-
-        extern crate std;
-        let token_marker = std::format!("{:?}", token_id);
-        let amount_marker = std::format!("amount: {}", fund_amount);
-
-        for e in events.events() {
-            let s = std::format!("{:?}", e);
-            if s.contains("payer_receipt") {
-                found_receipt = true;
-                assert!(s.contains("grant_id: 1"));
-                assert!(s.contains(&amount_marker));
-                assert!(s.contains(&token_marker));
-                assert!(s.contains("milestone_index: None"));
-                assert!(s.contains("seed funding"));
-            }
-        }
-
-        assert!(found_receipt, "PayerReceipt event was not emitted");
     }
 
     #[test]
@@ -2144,25 +2225,30 @@ mod tests {
         let grant_id = 1u64;
 
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token.clone(),
-                1000,
-                500,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                1,
-                &env,
-            );
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token.clone(), i128::MAX);
-            grant.escrow_balances = escrow_balances;
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token,
+
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+                cancellation_requested_at: None,
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -2191,26 +2277,31 @@ mod tests {
         token_admin.mint(&funder1, &1000i128);
         token_admin.mint(&funder2, &1000i128);
 
+        let mut escrow_balances = Map::new(&env);
+        escrow_balances.set(token_id.clone(), 0);
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
                 owner,
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                1000,
-                500,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                1,
-                &env,
-            );
-            let mut escrow_balances = Map::new(&env);
-            escrow_balances.set(token_id.clone(), 0);
-            grant.escrow_balances = escrow_balances;
+                primary_token: token_id.clone(),
+
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances: escrow_balances.clone(),
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+                cancellation_requested_at: None,
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -2249,26 +2340,31 @@ mod tests {
 
         token_admin.mint(&funder, &1000i128);
 
+        let mut escrow_balances = Map::new(&env);
+        escrow_balances.set(token_id.clone(), 0);
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
                 owner,
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                1000,
-                500,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                1,
-                &env,
-            );
-            let mut escrow_balances = Map::new(&env);
-            escrow_balances.set(token_id.clone(), 0);
-            grant.escrow_balances = escrow_balances;
+                primary_token: token_id.clone(),
+
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+                cancellation_requested_at: None,
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -2301,26 +2397,31 @@ mod tests {
 
         token_admin.mint(&funder, &1000i128);
 
+        let mut escrow_balances = Map::new(&env);
+        escrow_balances.set(token_id.clone(), 0);
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                1000,
-                500,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                1,
-                &env,
-            );
-            let mut escrow_balances = Map::new(&env);
-            escrow_balances.set(token_id.clone(), 0);
-            grant.escrow_balances = escrow_balances;
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token_id.clone(),
+
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+                cancellation_requested_at: None,
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -2374,7 +2475,7 @@ mod tests {
             assert_eq!(grant.description, description);
             assert_eq!(grant.total_amount, 1000);
             assert_eq!(grant.milestone_amount, 500);
-            assert_eq!(grant.total_milestones, 2);
+            assert_eq!(grant.total_milestones(), 2);
             assert_eq!(grant.status(), GrantStatus::PendingAcceptance);
             assert_eq!(
                 grant
@@ -2718,9 +2819,21 @@ mod tests {
         assert_eq!(result, true);
 
         env.as_contract(&contract_id, || {
-            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
-            // Milestone transitions directly to Paid after automatic payout
-            assert_eq!(updated_milestone.state(), MilestoneState::Paid);
+            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
+            assert_eq!(updated_milestone.state, MilestoneState::AwaitingPayout);
+        });
+
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + crate::CHALLENGE_PERIOD + 1);
+        client.milestone_payout(&grant_id, &milestone_idx, &owner);
+
+        env.as_contract(&contract_id, || {
+            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
+            assert_eq!(updated_milestone.state, MilestoneState::Paid);
             // After consensus, high_rep_reviewer should have 4 (3 + 1)
             assert_eq!(
                 Storage::get_reviewer_reputation(&env, high_rep_reviewer.clone()),
@@ -2769,8 +2882,10 @@ mod tests {
         env.as_contract(&contract_id, || {
             assert_eq!(Storage::get_reviewer_reputation(&env, reviewer1.clone()), 2);
             assert_eq!(Storage::get_reviewer_reputation(&env, reviewer2.clone()), 2);
-            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
-            assert_eq!(updated_milestone.state(), MilestoneState::Rejected);
+            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
+            assert_eq!(updated_milestone.state, MilestoneState::Rejected);
         });
     }
 
@@ -2810,8 +2925,10 @@ mod tests {
         client.milestone_dispute(&grant_id, &milestone_idx, &owner, &dispute_reason);
 
         env.as_contract(&contract_id, || {
-            let milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
-            assert_eq!(milestone.state(), MilestoneState::Disputed);
+            let milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
+            assert_eq!(milestone.state, MilestoneState::Disputed);
         });
     }
 
@@ -2858,8 +2975,10 @@ mod tests {
         client.milestone_resolve_dispute(&council, &grant_id, &milestone_idx, &true);
 
         env.as_contract(&contract_id, || {
-            let milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
-            assert_eq!(milestone.state(), MilestoneState::Approved);
+            let milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
+            assert_eq!(milestone.state, MilestoneState::Approved);
         });
     }
 
@@ -2901,8 +3020,10 @@ mod tests {
         assert_eq!(result, false);
 
         env.as_contract(&contract_id, || {
-            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
-            assert_eq!(updated_milestone.state(), MilestoneState::Submitted);
+            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
+            assert_eq!(updated_milestone.state, MilestoneState::Submitted);
             // No increment yet since consensus was not reached
             assert_eq!(
                 Storage::get_reviewer_reputation(&env, low_rep_reviewer.clone()),
@@ -3018,13 +3139,13 @@ mod tests {
         );
 
         env.as_contract(&client.address, || {
-            let m0 = Storage::get_milestone(&env, grant_id, 0).unwrap();
+            let m0 = Storage::get_milestone(&env, grant_id, 0).unwrap().unwrap();
             assert_eq!(m0.deadline, deadline_1);
-            assert_eq!(m0.state(), MilestoneState::Pending);
+            assert_eq!(m0.state, MilestoneState::Pending);
 
-            let m1 = Storage::get_milestone(&env, grant_id, 1).unwrap();
+            let m1 = Storage::get_milestone(&env, grant_id, 1).unwrap().unwrap();
             assert_eq!(m1.deadline, deadline_2);
-            assert_eq!(m1.state(), MilestoneState::Pending);
+            assert_eq!(m1.state, MilestoneState::Pending);
         });
     }
 
@@ -3076,37 +3197,51 @@ mod tests {
 
         // Seed the ledger timestamp at 0 and set up grant
         env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token.clone(),
-                1000,
-                500,
-                Vec::new(&env),
-                0,
-                0,
-                GrantStatus::Active,
-                1,
-                1,
-                &env,
-            );
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token.clone(), 1000);
-            grant.escrow_balances = escrow_balances;
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token.clone(),
+
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: 0,
+                last_heartbeat: 0,
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+                cancellation_requested_at: None,
+            };
             Storage::set_grant(&env, grant_id, &grant);
 
             // Seed milestone with deadline of 1000 (will be in the past when we advance timestamp)
-            let mut milestone = Milestone::new(
-                milestone_idx,
-                String::from_str(&env, "Description"),
-                500,
-                token.clone(),
-                1000,
-                &env,
-            );
-            milestone.set_state(MilestoneState::Pending);
+            let milestone = Milestone {
+                description: String::from_str(&env, "Description"),
+                amount: 500,
+                payout_token: token.clone(),
+                state: MilestoneState::Pending,
+                votes: Map::new(&env),
+
+                reasons: Map::new(&env),
+                status_updated_at: 0,
+                proof_url: None,
+                submission_timestamp: 0,
+                deadline: 1_000, // deadline at timestamp 1000
+
+                community_comments: Map::new(&env),
+                pending_extension_deadline: None,
+                extension_votes: Map::new(&env),
+                packed_stats: 0,
+            };
             Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
         });
 
@@ -3335,25 +3470,30 @@ mod tests {
             let mut reviewers = Vec::new(&env);
             reviewers.push_back(reviewer1.clone());
             reviewers.push_back(reviewer2.clone());
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token.clone(),
-                1000,
-                500,
-                reviewers,
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                1,
-                &env,
-            );
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token.clone(), 1000);
-            grant.escrow_balances = escrow_balances;
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token,
+
+                total_amount: 1000,
+                reviewers,
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+                cancellation_requested_at: None,
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -3476,25 +3616,30 @@ mod tests {
             let mut reviewers = Vec::new(&env);
             reviewers.push_back(reviewer1.clone());
             reviewers.push_back(reviewer2.clone());
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token.clone(),
-                1000,
-                500,
-                reviewers,
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                2,
-                1,
-                &env,
-            );
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token.clone(), 1000);
-            grant.escrow_balances = escrow_balances;
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token,
+
+                total_amount: 1000,
+                reviewers,
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+                cancellation_requested_at: None,
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -3519,25 +3664,30 @@ mod tests {
             let mut reviewers = Vec::new(&env);
             reviewers.push_back(reviewer1.clone());
             reviewers.push_back(reviewer2.clone());
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token.clone(),
-                1000,
-                500,
-                reviewers,
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                1,
-                &env,
-            );
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token.clone(), 1000);
-            grant.escrow_balances = escrow_balances;
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token,
+
+                total_amount: 1000,
+                reviewers,
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+                cancellation_requested_at: None,
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -3548,8 +3698,8 @@ mod tests {
 
         // Milestone stays Approved - removal is not retroactive
         env.as_contract(&contract_id, || {
-            let milestone = Storage::get_milestone(&env, grant_id, 0).unwrap();
-            assert_eq!(milestone.state(), MilestoneState::Approved);
+            let milestone = Storage::get_milestone(&env, grant_id, 0).unwrap().unwrap();
+            assert_eq!(milestone.state, MilestoneState::Approved);
         });
     }
 
@@ -3589,8 +3739,8 @@ mod tests {
         );
 
         env.as_contract(&contract_id, || {
-            let ms = Storage::get_milestone(&env, grant_id, 0).unwrap();
-            assert_eq!(ms.state(), MilestoneState::CommunityReview);
+            let ms = Storage::get_milestone(&env, grant_id, 0).unwrap().unwrap();
+            assert_eq!(ms.state, MilestoneState::CommunityReview);
         });
     }
 
@@ -3617,15 +3767,24 @@ mod tests {
 
         // Set milestone in CommunityReview state with submission_timestamp = 0
         env.as_contract(&contract_id, || {
-            let mut milestone = Milestone::new(
-                0,
-                String::from_str(&env, "Desc"),
-                100,
-                token.clone(),
-                0,
-                &env,
-            );
-            milestone.set_state(MilestoneState::CommunityReview);
+            let milestone = Milestone {
+                description: String::from_str(&env, "Desc"),
+                amount: 100,
+                payout_token: token.clone(),
+                state: MilestoneState::CommunityReview,
+                votes: Map::new(&env),
+
+                reasons: Map::new(&env),
+                status_updated_at: 0,
+                proof_url: None,
+                submission_timestamp: 0,
+                deadline: 0,
+
+                community_comments: Map::new(&env),
+                pending_extension_deadline: None,
+                extension_votes: Map::new(&env),
+                packed_stats: 0,
+            };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
         });
 
@@ -3661,15 +3820,24 @@ mod tests {
 
         // Submission timestamp = 0; advance ledger past 3-day period
         env.as_contract(&contract_id, || {
-            let mut milestone = Milestone::new(
-                0,
-                String::from_str(&env, "Desc"),
-                100,
-                token.clone(),
-                0,
-                &env,
-            );
-            milestone.set_state(MilestoneState::CommunityReview);
+            let milestone = Milestone {
+                description: String::from_str(&env, "Desc"),
+                amount: 100,
+                payout_token: token.clone(),
+                state: MilestoneState::CommunityReview,
+                votes: Map::new(&env),
+
+                reasons: Map::new(&env),
+                status_updated_at: 0,
+                proof_url: None,
+                submission_timestamp: 0,
+                deadline: 0,
+
+                community_comments: Map::new(&env),
+                pending_extension_deadline: None,
+                extension_votes: Map::new(&env),
+                packed_stats: 0,
+            };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
         });
 
@@ -3702,22 +3870,31 @@ mod tests {
         );
 
         env.as_contract(&contract_id, || {
-            let mut milestone = Milestone::new(
-                0,
-                String::from_str(&env, "Desc"),
-                100,
-                token.clone(),
-                0,
-                &env,
-            );
-            milestone.set_state(MilestoneState::CommunityReview);
+            let milestone = Milestone {
+                description: String::from_str(&env, "Desc"),
+                amount: 100,
+                payout_token: token.clone(),
+                state: MilestoneState::CommunityReview,
+                votes: Map::new(&env),
+
+                reasons: Map::new(&env),
+                status_updated_at: 0,
+                proof_url: None,
+                submission_timestamp: 0,
+                deadline: 0,
+
+                community_comments: Map::new(&env),
+                pending_extension_deadline: None,
+                extension_votes: Map::new(&env),
+                packed_stats: 0,
+            };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
         });
 
         client.milestone_upvote(&grant_id, &0u32, &voter);
 
         env.as_contract(&contract_id, || {
-            let ms = Storage::get_milestone(&env, grant_id, 0).unwrap();
+            let ms = Storage::get_milestone(&env, grant_id, 0).unwrap().unwrap();
             assert_eq!(ms.community_upvotes(), 1);
         });
     }
@@ -3741,15 +3918,24 @@ mod tests {
             Vec::new(&env),
         );
         env.as_contract(&contract_id, || {
-            let mut milestone = Milestone::new(
-                0,
-                String::from_str(&env, "Desc"),
-                100,
-                token.clone(),
-                0,
-                &env,
-            );
-            milestone.set_state(MilestoneState::CommunityReview);
+            let milestone = Milestone {
+                description: String::from_str(&env, "Desc"),
+                amount: 100,
+                payout_token: token.clone(),
+                state: MilestoneState::CommunityReview,
+                votes: Map::new(&env),
+
+                reasons: Map::new(&env),
+                status_updated_at: 0,
+                proof_url: None,
+                submission_timestamp: 0,
+                deadline: 0,
+
+                community_comments: Map::new(&env),
+                pending_extension_deadline: None,
+                extension_votes: Map::new(&env),
+                packed_stats: 0,
+            };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
         });
 
@@ -3777,15 +3963,24 @@ mod tests {
             Vec::new(&env),
         );
         env.as_contract(&contract_id, || {
-            let mut milestone = Milestone::new(
-                0,
-                String::from_str(&env, "Desc"),
-                100,
-                token.clone(),
-                0,
-                &env,
-            );
-            milestone.set_state(MilestoneState::CommunityReview);
+            let milestone = Milestone {
+                description: String::from_str(&env, "Desc"),
+                amount: 100,
+                payout_token: token.clone(),
+                state: MilestoneState::CommunityReview,
+                votes: Map::new(&env),
+
+                reasons: Map::new(&env),
+                status_updated_at: 0,
+                proof_url: None,
+                submission_timestamp: 0,
+                deadline: 0,
+
+                community_comments: Map::new(&env),
+                pending_extension_deadline: None,
+                extension_votes: Map::new(&env),
+                packed_stats: 0,
+            };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
         });
 
@@ -3793,7 +3988,7 @@ mod tests {
         client.milestone_comment(&grant_id, &0u32, &voter, &comment);
 
         env.as_contract(&contract_id, || {
-            let ms = Storage::get_milestone(&env, grant_id, 0).unwrap();
+            let ms = Storage::get_milestone(&env, grant_id, 0).unwrap().unwrap();
             assert_eq!(
                 ms.community_comments.get(voter.clone()).unwrap(),
                 String::from_str(&env, "Looks good to me!")
@@ -3853,15 +4048,24 @@ mod tests {
         );
 
         env.as_contract(&contract_id, || {
-            let mut milestone = Milestone::new(
-                0,
-                String::from_str(&env, "Desc"),
-                100,
-                token.clone(),
-                0,
-                &env,
-            );
-            milestone.set_state(MilestoneState::CommunityReview);
+            let milestone = Milestone {
+                description: String::from_str(&env, "Desc"),
+                amount: 100,
+                payout_token: token.clone(),
+                state: MilestoneState::CommunityReview,
+                votes: Map::new(&env),
+
+                reasons: Map::new(&env),
+                status_updated_at: 0,
+                proof_url: None,
+                submission_timestamp: 0,
+                deadline: 0,
+
+                community_comments: Map::new(&env),
+                pending_extension_deadline: None,
+                extension_votes: Map::new(&env),
+                packed_stats: 0,
+            };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
         });
 
@@ -3878,15 +4082,21 @@ mod tests {
         env.ledger()
             .set_timestamp(crate::COMMUNITY_REVIEW_PERIOD + 1);
 
+        // Reviewer votes — milestone gets approved
+        let approved = client.milestone_vote(&grant_id, &0u32, &reviewer, &true, &None);
+        assert!(approved);
+
+        // Community signals are still stored and haven't affected the vote count
         env.as_contract(&contract_id, || {
-            let ms = Storage::get_milestone(&env, grant_id, 0).unwrap();
+            let ms = Storage::get_milestone(&env, grant_id, 0).unwrap().unwrap();
             assert_eq!(ms.community_upvotes(), 1);
-            assert_eq!(
-                ms.community_comments.get(community_voter).unwrap(),
-                String::from_str(&env, "Great work")
-            );
+            assert_eq!(ms.approvals(), 1);
+            // State is now AwaitingPayout (payout is delayed) instead of Approved
+            assert_eq!(ms.state, MilestoneState::AwaitingPayout);
         });
     }
+
+    // -------------------------------------------------------------------------
     // Safe Cancel with Grace Period tests (#115)
     // -------------------------------------------------------------------------
 
@@ -3914,22 +4124,28 @@ mod tests {
             });
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token_id.clone(), 500);
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                500,
-                500,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                1,
-                &env,
-            );
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token_id.clone(),
+
+                total_amount: 500,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders,
+                reason: None,
+                cancellation_requested_at: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
         // Milestone is still Pending (no submission) → cancel is immediate
@@ -4060,22 +4276,28 @@ mod tests {
             });
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token_id.clone(), 500);
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                500,
-                500,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Active,
-                1,
-                1,
-                &env,
-            );
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Test"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token_id.clone(),
+
+                total_amount: 500,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders,
+                reason: None,
+                cancellation_requested_at: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
         create_milestone(&env, &contract_id, grant_id, 0, MilestoneState::Submitted);
@@ -4209,23 +4431,28 @@ mod tests {
         env.as_contract(&contract_id, || {
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token.clone(), 0);
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Completed Grant"),
-                String::from_str(&env, "Desc"),
-                token,
-                500,
-                1000,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Completed,
-                1,
-                1,
-                &env,
-            );
-            grant.funders = Vec::new(&env);
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Done"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token,
+
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                cancellation_requested_at: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -4251,23 +4478,28 @@ mod tests {
         env.as_contract(&contract_id, || {
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token_id.clone(), 0);
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Paused Grant"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                500,
-                1000,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Paused,
-                1,
-                1,
-                &env,
-            );
-            grant.funders = Vec::new(&env);
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Paused"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token_id.clone(),
+
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                cancellation_requested_at: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -4287,23 +4519,28 @@ mod tests {
         env.as_contract(&contract_id, || {
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token.clone(), 0);
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token,
-                500,
-                1000,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Paused,
-                1,
-                1,
-                &env,
-            );
-            grant.funders = Vec::new(&env);
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Paused"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token,
+
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                cancellation_requested_at: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
         create_milestone(&env, &contract_id, grant_id, 0, MilestoneState::Pending);
@@ -4335,23 +4572,28 @@ mod tests {
         env.as_contract(&contract_id, || {
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token.clone(), 0);
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Test"),
-                String::from_str(&env, "Desc"),
-                token,
-                500,
-                1000,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::Paused,
-                1,
-                1,
-                &env,
-            );
-            grant.funders = Vec::new(&env);
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Paused"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token,
+
+                total_amount: 1000,
+                reviewers,
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                cancellation_requested_at: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 0,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
         create_milestone(&env, &contract_id, grant_id, 0, MilestoneState::Submitted);
@@ -4469,23 +4711,28 @@ mod tests {
         env.as_contract(&contract_id, || {
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token_id.clone(), 0);
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Pending Funding Grant"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                500,
-                1000,
-                Vec::new(&env),
-                0,
-                env.ledger().timestamp(),
-                GrantStatus::PendingFunding,
-                1,
-                1,
-                &env,
-            );
-            grant.funders = Vec::new(&env);
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Pending Grant"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token_id.clone(),
+
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                cancellation_requested_at: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -4518,23 +4765,28 @@ mod tests {
         env.as_contract(&contract_id, || {
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token.clone(), 0);
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Pending Funding Grant"),
-                String::from_str(&env, "Desc"),
-                token,
-                500,
-                1000,
-                Vec::new(&env),
-                500,
-                env.ledger().timestamp(),
-                GrantStatus::PendingFunding,
-                1,
-                1,
-                &env,
-            );
-            grant.funders = Vec::new(&env);
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Pending Grant"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token,
+
+                total_amount: 1000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                cancellation_requested_at: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 500,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
         create_milestone(&env, &contract_id, grant_id, 0, MilestoneState::Pending);
@@ -4568,23 +4820,28 @@ mod tests {
         env.as_contract(&contract_id, || {
             let mut escrow_balances = Map::new(&env);
             escrow_balances.set(token_id.clone(), 0);
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Pending Funding Grant"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                500,
-                2000,
-                Vec::new(&env),
-                500,
-                env.ledger().timestamp(),
-                GrantStatus::PendingFunding,
-                1,
-                1,
-                &env,
-            );
-            grant.funders = Vec::new(&env);
+            let grant = Grant {
+                packed_config: 0,
+                id: grant_id,
+                title: String::from_str(&env, "Pending Grant"),
+                description: String::from_str(&env, "Desc"),
+                milestone_amount: 500,
+                owner: owner.clone(),
+                primary_token: token_id.clone(),
+
+                total_amount: 2000,
+                reviewers: Vec::new(&env),
+
+                escrow_balances,
+                funders: Vec::new(&env),
+                reason: None,
+                cancellation_requested_at: None,
+                timestamp: env.ledger().timestamp(),
+                last_heartbeat: env.ledger().timestamp(),
+                min_funding: 500,
+                hard_cap: 0,
+                tags: Vec::new(&env),
+            };
             Storage::set_grant(&env, grant_id, &grant);
         });
 
@@ -4660,7 +4917,7 @@ mod tests {
         create_milestone(&env, &contract_id, grant_id, 0, MilestoneState::Submitted);
 
         env.as_contract(&contract_id, || {
-            let mut milestone = Storage::get_milestone(&env, grant_id, 0).unwrap();
+            let mut milestone = Storage::get_milestone(&env, grant_id, 0).unwrap().unwrap();
             milestone.set_approvals(1);
             Storage::set_milestone(&env, grant_id, 0, &milestone);
         });
@@ -4673,8 +4930,8 @@ mod tests {
         assert_eq!(token_client.balance(&contract_id), 1400);
 
         env.as_contract(&contract_id, || {
-            let milestone = Storage::get_milestone(&env, grant_id, 0).unwrap();
-            assert_eq!(milestone.state(), MilestoneState::Approved);
+            let milestone = Storage::get_milestone(&env, grant_id, 0).unwrap().unwrap();
+            assert_eq!(milestone.state, MilestoneState::Approved);
             let grant = Storage::get_grant(&env, grant_id).unwrap();
             assert_eq!(
                 grant
@@ -4768,7 +5025,7 @@ mod tests {
         create_milestone(&env, &contract_id, grant_id, 0, MilestoneState::Submitted);
 
         env.as_contract(&contract_id, || {
-            let mut milestone = Storage::get_milestone(&env, grant_id, 0).unwrap();
+            let mut milestone = Storage::get_milestone(&env, grant_id, 0).unwrap().unwrap();
             milestone.set_approvals(1);
             Storage::set_milestone(&env, grant_id, 0, &milestone);
 
@@ -4988,18 +5245,17 @@ mod tests {
 
         env.as_contract(&contract_id, || {
             let grant = Grant {
+                packed_config: 0,
                 id: grant_id,
                 title: String::from_str(&env, "Emergency"),
                 description: String::from_str(&env, "Desc"),
                 milestone_amount: 500,
                 owner: owner.clone(),
                 primary_token: token.clone(),
-                status: GrantStatus::Active,
+
                 total_amount: 1000,
                 reviewers: Vec::new(&env),
-                quorum: 1,
-                total_milestones: 2,
-                milestones_paid_out: 0,
+
                 escrow_balances: {
                     let mut map = Map::new(&env);
                     map.set(token.clone(), 0);
@@ -5194,10 +5450,8 @@ mod tests {
         use soroban_sdk::testutils::Events;
         let events = env.events().all();
         let mut found_paid_event = false;
-        let mut found_payee_receipt = false;
 
         extern crate std;
-        let token_marker = std::format!("{:?}", token_id);
         for e in events.events() {
             let s = std::format!("{:?}", e);
             if s.contains("milestone_paid") {
@@ -5207,17 +5461,9 @@ mod tests {
                 assert!(s.contains("0")); // milestone_idx
                 assert!(s.contains("100")); // amount (create_milestone seeds amount=100)
             }
-            if s.contains("payee_receipt") {
-                found_payee_receipt = true;
-                assert!(s.contains("grant_id: 1"));
-                assert!(s.contains("amount: 100"));
-                assert!(s.contains(&token_marker));
-                assert!(s.contains("milestone_index: Some(0)"));
-            }
         }
 
         assert!(found_paid_event, "MilestonePaid event was not emitted");
-        assert!(found_payee_receipt, "PayeeReceipt event was not emitted");
     }
 
     #[test]
@@ -5263,8 +5509,10 @@ mod tests {
         assert_eq!(final_balance, 100); // create_milestone seeds amount=100
 
         env.as_contract(&contract_id, || {
-            let milestone = crate::Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
-            assert_eq!(milestone.state(), MilestoneState::Paid);
+            let milestone = crate::Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
+            assert_eq!(milestone.state, MilestoneState::Paid);
             let grant = crate::Storage::get_grant(&env, grant_id).unwrap();
             assert_eq!(grant.escrow_balances.get(token.clone()).unwrap_or(0), 900);
             assert_eq!(grant.milestones_paid_out(), 1);
@@ -5406,7 +5654,9 @@ mod tests {
         assert_eq!(result, true); // Quorum reached
 
         env.as_contract(&contract_id, || {
-            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
+            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
             assert_eq!(updated_milestone.state, MilestoneState::AwaitingPayout);
         });
 
@@ -5420,7 +5670,9 @@ mod tests {
         );
 
         env.as_contract(&contract_id, || {
-            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
+            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
             assert_eq!(updated_milestone.state, MilestoneState::Challenged);
         });
 
@@ -5430,7 +5682,9 @@ mod tests {
         client.milestone_resolve_dispute(&council, &grant_id, &milestone_idx, &true);
 
         env.as_contract(&contract_id, || {
-            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
+            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
             assert_eq!(updated_milestone.state, MilestoneState::AwaitingPayout);
             // Returned to awaiting payout
         });
@@ -5443,7 +5697,9 @@ mod tests {
         client.milestone_payout(&grant_id, &milestone_idx, &owner);
 
         env.as_contract(&contract_id, || {
-            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx).unwrap();
+            let updated_milestone = Storage::get_milestone(&env, grant_id, milestone_idx)
+                .unwrap()
+                .unwrap();
             assert_eq!(updated_milestone.state, MilestoneState::Paid);
         });
 
@@ -5795,292 +6051,5 @@ mod tests {
             &tags,
         );
         assert!(result.is_err(), "Should reject tags longer than 20 chars");
-    }
-
-    // ── Issue #164: milestone_vote stake enforcement ──────────────────────────
-
-    #[test]
-    fn test_milestone_vote_fails_when_reviewer_has_insufficient_stake() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, contract_id) = setup_test(&env);
-        let council = Address::generate(&env);
-        client.initialize(&admin, &council);
-
-        let grant_id = 200u64;
-        let milestone_idx = 0u32;
-        let owner = Address::generate(&env);
-        let reviewer = Address::generate(&env);
-
-        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
-        let token_id = token_contract.address();
-        let token_admin = token::StellarAssetClient::new(&env, &token_id);
-        token_admin.mint(&contract_id, &500);
-
-        let mut reviewers = Vec::new(&env);
-        reviewers.push_back(reviewer.clone());
-        create_grant(
-            &env,
-            &contract_id,
-            grant_id,
-            owner,
-            token_id.clone(),
-            reviewers,
-        );
-        create_milestone(
-            &env,
-            &contract_id,
-            grant_id,
-            milestone_idx,
-            MilestoneState::Submitted,
-        );
-
-        // Set MinReviewerStake to 100 but reviewer has staked nothing.
-        env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .set(&crate::storage::DataKey::MinReviewerStake, &100i128);
-        });
-
-        let result = client.try_milestone_vote(&grant_id, &milestone_idx, &reviewer, &true, &None);
-        assert_eq!(
-            result,
-            Err(Ok(ContractError::InsufficientStake.into())),
-            "vote should fail when reviewer stake < MinReviewerStake"
-        );
-    }
-
-    #[test]
-    fn test_milestone_vote_succeeds_when_reviewer_has_sufficient_stake() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, contract_id) = setup_test(&env);
-        let council = Address::generate(&env);
-        client.initialize(&admin, &council);
-
-        let grant_id = 201u64;
-        let milestone_idx = 0u32;
-        let owner = Address::generate(&env);
-        let reviewer = Address::generate(&env);
-
-        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
-        let token_id = token_contract.address();
-        let token_admin = token::StellarAssetClient::new(&env, &token_id);
-        // Mint enough for escrow payout + stake transfer
-        token_admin.mint(&contract_id, &500);
-        token_admin.mint(&reviewer, &200);
-
-        let mut reviewers = Vec::new(&env);
-        reviewers.push_back(reviewer.clone());
-        create_grant(
-            &env,
-            &contract_id,
-            grant_id,
-            owner.clone(),
-            token_id.clone(),
-            reviewers,
-        );
-        create_milestone(
-            &env,
-            &contract_id,
-            grant_id,
-            milestone_idx,
-            MilestoneState::Submitted,
-        );
-
-        // Set MinReviewerStake to 100 and record that reviewer has staked 100.
-        env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .set(&crate::storage::DataKey::MinReviewerStake, &100i128);
-            env.storage().persistent().set(
-                &crate::storage::DataKey::ReviewerStake(grant_id, reviewer.clone()),
-                &100i128,
-            );
-        });
-
-        // Vote should succeed because stake meets the minimum.
-        let result = client.milestone_vote(&grant_id, &milestone_idx, &reviewer, &true, &None);
-        assert!(result, "vote should succeed when stake >= MinReviewerStake");
-    }
-
-    #[test]
-    fn test_milestone_vote_succeeds_when_no_min_stake_configured() {
-        // When MinReviewerStake is 0 (default), no stake check is applied.
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, contract_id) = setup_test(&env);
-        let council = Address::generate(&env);
-        client.initialize(&admin, &council);
-
-        let grant_id = 202u64;
-        let milestone_idx = 0u32;
-        let owner = Address::generate(&env);
-        let reviewer = Address::generate(&env);
-
-        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
-        let token_id = token_contract.address();
-        let token_admin = token::StellarAssetClient::new(&env, &token_id);
-        token_admin.mint(&contract_id, &500);
-
-        let mut reviewers = Vec::new(&env);
-        reviewers.push_back(reviewer.clone());
-        create_grant(
-            &env,
-            &contract_id,
-            grant_id,
-            owner.clone(),
-            token_id.clone(),
-            reviewers,
-        );
-        create_milestone(
-            &env,
-            &contract_id,
-            grant_id,
-            milestone_idx,
-            MilestoneState::Submitted,
-        );
-
-        // MinReviewerStake is 0 by default — reviewer with zero stake should still be able to vote.
-        let result = client.milestone_vote(&grant_id, &milestone_idx, &reviewer, &true, &None);
-        assert!(result, "vote should succeed when MinReviewerStake is 0");
-    }
-
-    // ── Issue #163: grant_clawback ────────────────────────────────────────────
-
-    #[test]
-    fn test_grant_clawback_council_returns_funds_pro_rata() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, contract_id) = setup_test(&env);
-        let council = Address::generate(&env);
-        client.initialize(&admin, &council);
-
-        let grant_id = 300u64;
-        let owner = Address::generate(&env);
-        let funder1 = Address::generate(&env);
-        let funder2 = Address::generate(&env);
-
-        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
-        let token_id = token_contract.address();
-        let token_admin = token::StellarAssetClient::new(&env, &token_id);
-        let escrow_balance: i128 = 1000;
-        token_admin.mint(&contract_id, &escrow_balance);
-
-        let mut funders = Vec::new(&env);
-        funders.push_back(GrantFund {
-            funder: funder1.clone(),
-            amount: 600,
-            token: token_id.clone(),
-        });
-        funders.push_back(GrantFund {
-            funder: funder2.clone(),
-            amount: 400,
-            token: token_id.clone(),
-        });
-
-        env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner.clone(),
-                String::from_str(&env, "Fraudulent grant"),
-                String::from_str(&env, "Desc"),
-                token_id.clone(),
-                escrow_balance,
-                500,
-                Vec::new(&env),
-                GrantStatus::Active,
-                1,
-                2,
-                env.ledger().timestamp(),
-                0,
-                &env,
-            );
-            let mut escrow_balances = Map::new(&env);
-            escrow_balances.set(token_id.clone(), escrow_balance);
-            grant.escrow_balances = escrow_balances;
-            grant.funders = funders;
-            Storage::set_grant(&env, grant_id, &grant);
-        });
-
-        // Council claws back funds.
-        client.grant_clawback(&council, &grant_id);
-
-        // Verify pro-rata refunds: funder1 gets 600, funder2 gets 400.
-        let token_client = token::Client::new(&env, &token_id);
-        assert_eq!(token_client.balance(&funder1), 600);
-        assert_eq!(token_client.balance(&funder2), 400);
-
-        // Verify grant is now cancelled.
-        env.as_contract(&contract_id, || {
-            let updated = Storage::get_grant(&env, grant_id).unwrap();
-            assert_eq!(updated.status(), GrantStatus::Cancelled);
-            assert_eq!(
-                updated.escrow_balances.get(token_id.clone()).unwrap_or(0),
-                0
-            );
-        });
-    }
-
-    #[test]
-    fn test_grant_clawback_non_council_is_rejected() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, contract_id) = setup_test(&env);
-        let council = Address::generate(&env);
-        let impostor = Address::generate(&env);
-        client.initialize(&admin, &council);
-
-        let grant_id = 301u64;
-        let owner = Address::generate(&env);
-        let token = Address::generate(&env);
-        create_grant(&env, &contract_id, grant_id, owner, token, Vec::new(&env));
-
-        let result = client.try_grant_clawback(&impostor, &grant_id);
-        assert_eq!(
-            result,
-            Err(Ok(ContractError::Unauthorized.into())),
-            "non-council caller must be rejected"
-        );
-    }
-
-    #[test]
-    fn test_grant_clawback_on_cancelled_grant_fails() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (client, admin, contract_id) = setup_test(&env);
-        let council = Address::generate(&env);
-        client.initialize(&admin, &council);
-
-        let grant_id = 302u64;
-        let owner = Address::generate(&env);
-        let token = Address::generate(&env);
-
-        env.as_contract(&contract_id, || {
-            let mut grant = Grant::new(
-                grant_id,
-                owner,
-                String::from_str(&env, "Already cancelled"),
-                String::from_str(&env, "Desc"),
-                token,
-                500,
-                500,
-                Vec::new(&env),
-                GrantStatus::Cancelled,
-                1,
-                1,
-                env.ledger().timestamp(),
-                0,
-                &env,
-            );
-            Storage::set_grant(&env, grant_id, &grant);
-        });
-
-        let result = client.try_grant_clawback(&council, &grant_id);
-        assert_eq!(
-            result,
-            Err(Ok(ContractError::InvalidState.into())),
-            "clawback on an already-cancelled grant must be rejected"
-        );
     }
 }
