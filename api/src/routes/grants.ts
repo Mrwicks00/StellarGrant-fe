@@ -2,6 +2,7 @@ import { Router } from "express";
 import { Repository } from "typeorm";
 import { Grant } from "../entities/Grant";
 import { UserWatchlist } from "../entities/UserWatchlist";
+import { Activity } from "../entities/Activity";
 import { GrantSyncService } from "../services/grant-sync-service";
 import { SignatureService } from "../services/signature-service";
 import { z } from "zod";
@@ -93,6 +94,7 @@ export const buildGrantRouter = (
 ) => {
   const router = Router();
   const watchlistRepo = grantRepo.manager.getRepository(UserWatchlist);
+  const activityRepo = grantRepo.manager.getRepository(Activity);
 
   router.get("/", async (req, res, next) => {
     try {
@@ -291,6 +293,15 @@ export const buildGrantRouter = (
         grantId: id,
       });
 
+      // Log activity for watchlist addition
+      await grantRepo.manager.getRepository(UserWatchlist).manager.getRepository(Activity).save({
+        type: "watchlist_added",
+        entityType: "grant",
+        entityId: id,
+        actorAddress: address,
+        data: null,
+      });
+
       res.status(201).json({ data: { watched: true } });
     } catch (error: any) {
       if (error?.code === "23505" || error?.code === "SQLITE_CONSTRAINT") {
@@ -360,6 +371,15 @@ export const buildGrantRouter = (
         res.status(404).json({ error: "Watchlist entry not found" });
         return;
       }
+
+      // Log activity for watchlist removal
+      await activityRepo.save({
+        type: "watchlist_removed",
+        entityType: "grant",
+        entityId: id,
+        actorAddress: address,
+        data: null,
+      });
 
       res.json({ data: { watched: false } });
     } catch (error) {

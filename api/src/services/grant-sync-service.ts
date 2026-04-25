@@ -2,12 +2,14 @@ import { DataSource, Repository } from "typeorm";
 import { Grant } from "../entities/Grant";
 import { Contributor } from "../entities/Contributor";
 import { ReputationLog } from "../entities/ReputationLog";
+import { Activity } from "../entities/Activity";
 import { SorobanContractClient } from "../soroban/types";
 
 export class GrantSyncService {
   private readonly grantRepo: Repository<Grant>;
   private readonly contributorRepo: Repository<Contributor>;
   private readonly reputationLogRepo: Repository<ReputationLog>;
+  private readonly activityRepo: Repository<Activity>;
 
   constructor(
     private readonly dataSource: DataSource,
@@ -16,21 +18,64 @@ export class GrantSyncService {
     this.grantRepo = this.dataSource.getRepository(Grant);
     this.contributorRepo = this.dataSource.getRepository(Contributor);
     this.reputationLogRepo = this.dataSource.getRepository(ReputationLog);
+    this.activityRepo = this.dataSource.getRepository(Activity);
   }
 
   async syncAllGrants(): Promise<void> {
     const grants = await this.sorobanClient.fetchGrants();
     for (const grant of grants) {
+      const existingGrant = await this.grantRepo.findOne({ where: { id: grant.id } });
       await this.grantRepo.save(grant);
       await this.syncContributorScore(grant.recipient);
+
+      // Log activity for new grants
+      if (!existingGrant) {
+        await this.logActivity({
+          type: "grant_created",
+          entityType: "grant",
+          entityId: grant.id,
+          actorAddress: grant.recipient,
+          data: { title: grant.title, totalAmount: grant.totalAmount },
+        });
+      } else if (existingGrant.status !== grant.status) {
+        // Log activity for status changes
+        await this.logActivity({
+          type: "grant_updated",
+          entityType: "grant",
+          entityId: grant.id,
+          actorAddress: grant.recipient,
+          data: { oldStatus: existingGrant.status, newStatus: grant.status },
+        });
+      }
     }
   }
 
   async syncGrant(id: number): Promise<void> {
     const grant = await this.sorobanClient.fetchGrantById(id);
     if (!grant) return;
+    const existingGrant = await this.grantRepo.findOne({ where: { id } });
     await this.grantRepo.save(grant);
     await this.syncContributorScore(grant.recipient);
+
+    // Log activity for new grants
+    if (!existingGrant) {
+      await this.logActivity({
+        type: "grant_created",
+        entityType: "grant",
+        entityId: grant.id,
+        actorAddress: grant.recipient,
+        data: { title: grant.title, totalAmount: grant.totalAmount },
+      });
+    } else if (existingGrant.status !== grant.status) {
+      // Log activity for status changes
+      await this.logActivity({
+        type: "grant_updated",
+        entityType: "grant",
+        entityId: grant.id,
+        actorAddress: grant.recipient,
+        data: { oldStatus: existingGrant.status, newStatus: grant.status },
+      });
+    }
   }
 
   private async syncContributorScore(address: string): Promise<void> {
@@ -60,6 +105,31 @@ export class GrantSyncService {
       log.address = address;
       log.gain = score.reputation - oldReputation;
       await this.reputationLogRepo.save(log);
+
+      // Log activity for reputation gain
+      await this.logActivity({
+        type: "reputation_gained",
+        entityType: "contributor",
+        entityId: null,
+        actorAddress: address,
+        data: { gain: score.reputation - oldReputation, newReputation: score.reputation },
+      });
     }
+  }
+
+  private async logActivity(params: {
+    type: string;
+    entityType: string;
+    entityId: number | null;
+    actorAddress: string | null;
+    data: Record<string, unknown> | null;
+  }): Promise<void> {
+    const activity = new Activity();
+    activity.type = params.type as any;
+    activity.entityType = params.entityType as any;
+    activity.entityId = params.entityId;
+    activity.actorAddress = params.actorAddress;
+    activity.data = params.data;
+    await this.activityRepo.save(activity);
   }
 }

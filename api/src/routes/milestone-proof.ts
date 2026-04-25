@@ -2,6 +2,7 @@ import { Router } from "express";
 import { Repository } from "typeorm";
 import { z } from "zod";
 import { MilestoneProof } from "../entities/MilestoneProof";
+import { Activity } from "../entities/Activity";
 import { SignatureService } from "../services/signature-service";
 
 const milestoneProofSchema = z.object({
@@ -18,6 +19,7 @@ export const buildMilestoneProofRouter = (
   proofRepo: Repository<MilestoneProof>,
   signatureService: SignatureService,
 ) => {
+  const activityRepo = proofRepo.manager.getRepository(Activity);
   const router = Router();
 
   router.post("/", async (req, res, next) => {
@@ -48,6 +50,15 @@ export const buildMilestoneProofRouter = (
         submittedBy: payload.submittedBy,
         signature: payload.signature,
         nonce: payload.nonce,
+      });
+
+      // Log activity for milestone submission
+      await activityRepo.save({
+        type: "milestone_submitted",
+        entityType: "milestone_proof",
+        entityId: proof.id,
+        actorAddress: payload.submittedBy,
+        data: { grantId: payload.grantId, milestoneIdx: payload.milestoneIdx },
       });
 
       res.status(201).json({ data: proof });

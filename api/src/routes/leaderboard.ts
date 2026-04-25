@@ -18,7 +18,7 @@ export const buildLeaderboardRouter = (leaderboardService: LeaderboardService) =
           total,
           page,
           limit,
-          totalPages: Math.ceil(total / limit),
+          totalPages: Math.ceil(Number(total) / limit),
         },
       });
     } catch (error) {
