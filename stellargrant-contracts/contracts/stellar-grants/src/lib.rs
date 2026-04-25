@@ -21,8 +21,10 @@ use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, Map, Stri
 pub const COMMUNITY_REVIEW_PERIOD: u64 = 3 * 24 * 60 * 60;
 pub const CHALLENGE_PERIOD: u64 = 48 * 60 * 60;
 pub const CANCEL_GRACE_PERIOD: u64 = 7 * 24 * 60 * 60;
-/// No owner activity (heartbeat) for this long allows permissionless `mark_grant_inactive`.
-pub const HEARTBEAT_INACTIVITY_SECS: u64 = 60 * 24 * 60 * 60;
+/// No owner activity (heartbeat) for this long automatically makes the grant inactive.
+pub const HEARTBEAT_INACTIVE_SECS: u64 = 30 * 24 * 60 * 60;
+/// No owner activity (heartbeat) for this long allows permissionless cancellation.
+pub const HEARTBEAT_CANCEL_SECS: u64 = 60 * 24 * 60 * 60;
 
 const MAX_BOUNTY_SUBMISSIONS_PER_MILESTONE: u32 = 20;
 
@@ -1319,7 +1321,7 @@ impl StellarGrantsContract {
 
             let now = env.ledger().timestamp();
             let heartbeat_age = now.saturating_sub(grant.last_heartbeat);
-            let heartbeat_timeout_60d = heartbeat_age > HEARTBEAT_INACTIVITY_SECS;
+            let heartbeat_timeout_60d = heartbeat_age > HEARTBEAT_CANCEL_SECS;
 
             if !(caller_is_admin
                 || caller_is_owner
@@ -1331,7 +1333,7 @@ impl StellarGrantsContract {
 
             let current_status = grant.status();
             match current_status {
-                GrantStatus::Active | GrantStatus::Paused => {
+                GrantStatus::Active | GrantStatus::Paused | GrantStatus::Inactive => {
                     // Check whether any milestone is still actively under review.
                     let mut has_active_submission = false;
                     for milestone_idx in 0..grant.total_milestones() {
@@ -2990,7 +2992,7 @@ impl StellarGrantsContract {
     }
 
     /// Anyone may call this to mark an abandoned grant inactive after the owner has not
-    /// refreshed `last_heartbeat` for [`HEARTBEAT_INACTIVITY_SECS`].
+    /// refreshed `last_heartbeat` for [`HEARTBEAT_INACTIVE_SECS`].
     pub fn mark_grant_inactive(env: Env, grant_id: u64) -> Result<(), ContractError> {
         assert_not_paused(&env)?;
 
@@ -3000,11 +3002,7 @@ impl StellarGrantsContract {
         }
 
         let now = env.ledger().timestamp();
-        if now
-            <= grant
-                .last_heartbeat
-                .saturating_add(HEARTBEAT_INACTIVITY_SECS)
-        {
+        if now <= grant.last_heartbeat.saturating_add(HEARTBEAT_INACTIVE_SECS) {
             return Err(ContractError::HeartbeatNotStale);
         }
 
@@ -3268,7 +3266,7 @@ fn check_heartbeat(env: &Env, grant: &mut Grant) {
     let now = env.ledger().timestamp();
     let seconds_since_heartbeat = now.saturating_sub(grant.last_heartbeat);
 
-    if seconds_since_heartbeat > HEARTBEAT_INACTIVITY_SECS {
+    if seconds_since_heartbeat > HEARTBEAT_INACTIVE_SECS {
         grant.set_status(GrantStatus::Inactive);
         Storage::set_grant(env, grant.id, grant);
         Storage::index_transition(
