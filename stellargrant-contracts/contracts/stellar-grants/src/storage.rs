@@ -32,11 +32,12 @@ pub enum DataKey {
     MilestoneReputationApplied(u64, u32),
     DisputeFeeAmount,
     MilestoneDisputeInfo(u64, u32),
+    /// Tracks whether a funder has already voted on a milestone.
+    FunderVote(u64, u32, soroban_sdk::Address),
     AccessControl(soroban_sdk::Address),
     RoleMemberCount(u32),
-    ExtensionRequest(u64, u32),
     BountySubmissions(u64, u32),
-    /// Pending refund for a funder after grant cancellation: (grant_id, funder) -> Vec<(token, amount)>.
+    ExtensionRequest(u64, u32),
     PendingRefund(u64, soroban_sdk::Address),
 }
 
@@ -565,6 +566,32 @@ impl Storage {
             .remove(&DataKey::MilestoneDisputeInfo(grant_id, milestone_idx));
     }
 
+    pub fn get_funder_vote(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        funder: &soroban_sdk::Address,
+    ) -> Option<bool> {
+        let key = DataKey::FunderVote(grant_id, milestone_idx, funder.clone());
+        let vote = env.storage().persistent().get(&key);
+        if vote.is_some() {
+            Self::bump_persistent_ttl(env, &key);
+        }
+        vote
+    }
+
+    pub fn set_funder_vote(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        funder: &soroban_sdk::Address,
+        approve: bool,
+    ) {
+        let key = DataKey::FunderVote(grant_id, milestone_idx, funder.clone());
+        env.storage().persistent().set(&key, &approve);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
     pub fn get_extension_request(
         env: &Env,
         grant_id: u64,
@@ -595,27 +622,24 @@ impl Storage {
             .remove(&DataKey::ExtensionRequest(grant_id, milestone_idx));
     }
 
-    // ── Pull-based refund helpers (issue #66) ─────────────────────────────
-
-    /// Returns the pending refunds owed to `funder` for a cancelled grant.
-    /// Each entry is `(token_address, amount)`.
     pub fn get_pending_refund(
         env: &Env,
         grant_id: u64,
         funder: &soroban_sdk::Address,
-    ) -> Vec<(soroban_sdk::Address, i128)> {
+    ) -> Vec<(Address, i128)> {
         let key = DataKey::PendingRefund(grant_id, funder.clone());
-        env.storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(Vec::new(env))
+        let v = env.storage().persistent().get(&key);
+        if v.is_some() {
+            Self::bump_persistent_ttl(env, &key);
+        }
+        v.unwrap_or(Vec::new(env))
     }
 
     pub fn set_pending_refund(
         env: &Env,
         grant_id: u64,
         funder: &soroban_sdk::Address,
-        refunds: &Vec<(soroban_sdk::Address, i128)>,
+        refunds: &Vec<(Address, i128)>,
     ) {
         let key = DataKey::PendingRefund(grant_id, funder.clone());
         env.storage().persistent().set(&key, refunds);
