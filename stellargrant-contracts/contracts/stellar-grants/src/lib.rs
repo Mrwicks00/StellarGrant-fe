@@ -1453,15 +1453,10 @@ impl StellarGrantsContract {
     /// each funder's pro-rata share is recorded in storage and must be claimed here.
     ///
     /// Callable by any address that has a recorded refund; the caller must be the funder.
-    pub fn refund_claim(
-        env: Env,
-        grant_id: u64,
-        funder: Address,
-    ) -> Result<(), ContractError> {
+    pub fn refund_claim(env: Env, grant_id: u64, funder: Address) -> Result<(), ContractError> {
         funder.require_auth();
         reentrancy::with_non_reentrant(&env, || {
-            let grant =
-                Storage::get_grant(&env, grant_id).ok_or(ContractError::GrantNotFound)?;
+            let grant = Storage::get_grant(&env, grant_id).ok_or(ContractError::GrantNotFound)?;
 
             if grant.status() != GrantStatus::Cancelled {
                 return Err(ContractError::InvalidState);
@@ -1476,18 +1471,8 @@ impl StellarGrantsContract {
             for (token, amount) in pending.iter() {
                 if amount > 0 {
                     let token_client = token::Client::new(&env, &token);
-                    token_client.transfer(
-                        &env.current_contract_address(),
-                        &funder,
-                        &amount,
-                    );
-                    Events::emit_refund_claimed(
-                        &env,
-                        grant_id,
-                        funder.clone(),
-                        amount,
-                        token,
-                    );
+                    token_client.transfer(&env.current_contract_address(), &funder, &amount);
+                    Events::emit_refund_claimed(&env, grant_id, funder.clone(), amount, token);
                 }
             }
 
@@ -2294,13 +2279,7 @@ impl StellarGrantsContract {
         milestone.proof_hash = Some(proof_hash.clone());
         Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
 
-        Events::emit_proof_hash_submitted(
-            &env,
-            grant_id,
-            milestone_idx,
-            submitter,
-            proof_hash,
-        );
+        Events::emit_proof_hash_submitted(&env, grant_id, milestone_idx, submitter, proof_hash);
 
         Ok(())
     }
@@ -3388,8 +3367,7 @@ fn record_pending_refunds_for_funders(
 
         if refund_amount > 0 {
             // Append to any existing pending refunds for this funder (multiple tokens).
-            let mut pending =
-                Storage::get_pending_refund(env, grant_id, &fund_entry.funder);
+            let mut pending = Storage::get_pending_refund(env, grant_id, &fund_entry.funder);
             pending.push_back((token.clone(), refund_amount));
             Storage::set_pending_refund(env, grant_id, &fund_entry.funder, &pending);
         }

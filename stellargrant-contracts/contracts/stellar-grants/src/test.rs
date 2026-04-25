@@ -1189,7 +1189,7 @@ mod tests {
                 packed_stats: 0,
                 additional_funds: Map::new(&env),
                 top_up_contributions: Vec::new(&env),
-                    proof_hash: None,
+                proof_hash: None,
                 bounty_winner: None,
             };
             Storage::set_milestone(&env, grant_id, 0, &m1);
@@ -1211,7 +1211,7 @@ mod tests {
                 packed_stats: 0,
                 additional_funds: Map::new(&env),
                 top_up_contributions: Vec::new(&env),
-                    proof_hash: None,
+                proof_hash: None,
                 bounty_winner: None,
             };
             Storage::set_milestone(&env, grant_id, 1, &m2);
@@ -1285,7 +1285,7 @@ mod tests {
                 packed_stats: 0,
                 additional_funds: Map::new(&env),
                 top_up_contributions: Vec::new(&env),
-                    proof_hash: None,
+                proof_hash: None,
                 bounty_winner: None,
             };
             Storage::set_milestone(&env, grant_id, 0, &m1);
@@ -1628,7 +1628,7 @@ mod tests {
                 packed_stats: 0,
                 additional_funds: Map::new(&env),
                 top_up_contributions: Vec::new(&env),
-                    proof_hash: None,
+                proof_hash: None,
                 bounty_winner: None,
             };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
@@ -3318,7 +3318,7 @@ mod tests {
                 packed_stats: 0,
                 additional_funds: Map::new(&env),
                 top_up_contributions: Vec::new(&env),
-                    proof_hash: None,
+                proof_hash: None,
                 bounty_winner: None,
             };
             Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
@@ -3877,7 +3877,7 @@ mod tests {
                 packed_stats: 0,
                 additional_funds: Map::new(&env),
                 top_up_contributions: Vec::new(&env),
-                    proof_hash: None,
+                proof_hash: None,
                 bounty_winner: None,
             };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
@@ -3932,7 +3932,7 @@ mod tests {
                 packed_stats: 0,
                 additional_funds: Map::new(&env),
                 top_up_contributions: Vec::new(&env),
-                    proof_hash: None,
+                proof_hash: None,
                 bounty_winner: None,
             };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
@@ -3984,7 +3984,7 @@ mod tests {
                 packed_stats: 0,
                 additional_funds: Map::new(&env),
                 top_up_contributions: Vec::new(&env),
-                    proof_hash: None,
+                proof_hash: None,
                 bounty_winner: None,
             };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
@@ -4034,7 +4034,7 @@ mod tests {
                 packed_stats: 0,
                 additional_funds: Map::new(&env),
                 top_up_contributions: Vec::new(&env),
-                    proof_hash: None,
+                proof_hash: None,
                 bounty_winner: None,
             };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
@@ -4081,7 +4081,7 @@ mod tests {
                 packed_stats: 0,
                 additional_funds: Map::new(&env),
                 top_up_contributions: Vec::new(&env),
-                    proof_hash: None,
+                proof_hash: None,
                 bounty_winner: None,
             };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
@@ -4168,7 +4168,7 @@ mod tests {
                 packed_stats: 0,
                 additional_funds: Map::new(&env),
                 top_up_contributions: Vec::new(&env),
-                    proof_hash: None,
+                proof_hash: None,
                 bounty_winner: None,
             };
             Storage::set_milestone(&env, grant_id, 0, &milestone);
@@ -6551,11 +6551,7 @@ mod tests {
             setup_funded_grant(&env, &client, &token, &contract_id, &tok);
 
         // Cancel the grant — should NOT push transfers immediately
-        client.grant_cancel(
-            &grant_id,
-            &owner,
-            &String::from_str(&env, "shutting down"),
-        );
+        client.grant_cancel(&grant_id, &owner, &String::from_str(&env, "shutting down"));
 
         let balance_before = token_client.balance(&funder);
 
@@ -6563,7 +6559,10 @@ mod tests {
         client.refund_claim(&grant_id, &funder);
 
         let balance_after = token_client.balance(&funder);
-        assert!(balance_after > balance_before, "funder should have received tokens");
+        assert!(
+            balance_after > balance_before,
+            "funder should have received tokens"
+        );
     }
 
     #[test]
@@ -6593,11 +6592,7 @@ mod tests {
         let (grant_id, owner, _funder) =
             setup_funded_grant(&env, &client, &token, &contract_id, &tok);
 
-        client.grant_cancel(
-            &grant_id,
-            &owner,
-            &String::from_str(&env, "done"),
-        );
+        client.grant_cancel(&grant_id, &owner, &String::from_str(&env, "done"));
 
         // A non-funder has no pending refund
         let outsider = Address::generate(&env);
@@ -6616,11 +6611,7 @@ mod tests {
         let (grant_id, owner, funder) =
             setup_funded_grant(&env, &client, &token, &contract_id, &tok);
 
-        client.grant_cancel(
-            &grant_id,
-            &owner,
-            &String::from_str(&env, "done"),
-        );
+        client.grant_cancel(&grant_id, &owner, &String::from_str(&env, "done"));
 
         // First claim succeeds
         client.refund_claim(&grant_id, &funder);
