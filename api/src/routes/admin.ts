@@ -6,6 +6,8 @@ import { ReconciliationService } from "../services/reconciliation-service";
 import { Contributor } from "../entities/Contributor";
 import { AuditLog } from "../entities/AuditLog";
 import { Grant } from "../entities/Grant";
+import { PlatformConfig } from "../entities/PlatformConfig";
+import { FeeCollection } from "../entities/FeeCollection";
 
 const VALID_BULK_ACTIONS = ["approve", "reject", "flag"] as const;
 type BulkAction = (typeof VALID_BULK_ACTIONS)[number];
@@ -21,6 +23,10 @@ const bulkSchema = z.object({
   action: z.enum(VALID_BULK_ACTIONS),
 });
 
+const configSchema = z.object({
+  feePercentage: z.number().min(0).max(100),
+});
+
 export const buildAdminRouter = (
   grantSyncService: GrantSyncService,
   contributorRepo: Repository<Contributor>,
@@ -29,6 +35,8 @@ export const buildAdminRouter = (
 ) => {
   const router = Router();
   const grantRepo: Repository<Grant> = auditLogRepo.manager.getRepository(Grant);
+  const configRepo = auditLogRepo.manager.getRepository(PlatformConfig);
+  const feeRepo = auditLogRepo.manager.getRepository(FeeCollection);
 
   router.post("/sync/:grant_id", async (req, res, next) => {
     try {
