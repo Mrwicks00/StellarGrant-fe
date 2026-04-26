@@ -10,8 +10,14 @@ interface Notification {
   timestamp: string;
 }
 
+// Minimal interface to avoid 'any' and complex type resolution issues
+interface SocketInstance {
+  on: (event: string, callback: (data: Notification | unknown) => void) => void;
+  disconnect: () => void;
+}
+
 interface SocketContextType {
-  socket: any;
+  socket: SocketInstance | null;
   connected: boolean;
   lastNotification: Notification | null;
 }
@@ -26,10 +32,10 @@ export const useSocket = () => useContext(SocketContext);
 
 export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { address } = useWalletStore();
-  const [socket, setSocketState] = useState<any>(null);
+  const [socket, setSocketState] = useState<SocketInstance | null>(null);
   const [connected, setConnected] = useState(false);
   const [lastNotification, setLastNotification] = useState<Notification | null>(null);
-  const socketRef = useRef<any>(null);
+  const socketRef = useRef<SocketInstance | null>(null);
 
   useEffect(() => {
     if (!address) {
@@ -45,12 +51,13 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
 
     const socketUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-    // @ts-ignore - io is the default export in some build environments
+    
+    // @ts-expect-error - 'io' can be a default export or a named export depending on the environment
     const newSocket = io(socketUrl, {
       query: { address },
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
-    });
+    }) as unknown as SocketInstance;
 
     newSocket.on("connect", () => {
       setConnected(true);
@@ -62,8 +69,8 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       console.log("WebSocket disconnected");
     });
 
-    newSocket.on("notification", (data: Notification) => {
-      setLastNotification(data);
+    newSocket.on("notification", (data: unknown) => {
+      setLastNotification(data as Notification);
       console.log("New notification received:", data);
     });
 
