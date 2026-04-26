@@ -15,6 +15,7 @@ import {
   MilestoneVoteInput,
   StellarGrantsSDKConfig,
 } from "./types";
+import { EventParser, ParsedEvent } from "./events";
 
 /**
  * Encapsulated client for StellarGrants Soroban contract interactions.
@@ -123,6 +124,15 @@ export class StellarGrantsSDK {
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
     throw new StellarGrantsError(`Transaction timed out: ${hash}`, "TRANSACTION_TIMEOUT");
+  }
+
+  /**
+   * Parses events from a transaction response.
+   * @param response The transaction response from the RPC server.
+   * @returns An array of parsed events.
+   */
+  parseEvents(response: rpc.Api.GetTransactionResponse): ParsedEvent[] {
+    return EventParser.parseEvents(response);
   }
 
   private async invokeRead(method: string, args: xdr.ScVal[]): Promise<unknown> {

@@ -9,3 +9,11 @@ export type {
   StellarGrantsSDKConfig,
   StellarGrantsSigner,
 } from "./types";
+export { EventParser } from "./events";
+export type {
+  ParsedEvent,
+  GrantCreatedData,
+  MilestoneSubmittedData,
+  GrantFundedData,
+  MilestoneVotedData,
+} from "./events";
