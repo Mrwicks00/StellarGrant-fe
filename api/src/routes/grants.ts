@@ -8,6 +8,7 @@ import { FeeCollection } from "../entities/FeeCollection";
 import { GrantSyncService } from "../services/grant-sync-service";
 import { SignatureService } from "../services/signature-service";
 import { ResponseCacheService, responseCacheKeys } from "../services/response-cache";
+import { Contributor } from "../entities/Contributor";
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -101,6 +102,24 @@ export const buildGrantRouter = (
   const activityRepo = grantRepo.manager.getRepository(Activity);
   const configRepo = grantRepo.manager.getRepository(PlatformConfig);
   const feeRepo = grantRepo.manager.getRepository(FeeCollection);
+  const contributorRepo = grantRepo.manager.getRepository(Contributor);
+
+  const contributorProfilesByAddress = async (addresses: string[]) => {
+    const unique = [...new Set(addresses.map((a) => a.trim()).filter(Boolean))];
+    if (unique.length === 0) return new Map<string, Contributor>();
+    const rows = await contributorRepo.findBy(unique.map((address) => ({ address })));
+    return new Map(rows.map((c) => [c.address, c]));
+  };
+
+  const toProfile = (c: Contributor | undefined) => c ? ({
+    address: c.address,
+    bio: c.bio ?? null,
+    profilePictureUrl: c.profilePictureUrl ?? null,
+    githubUrl: c.githubUrl ?? null,
+    twitterUrl: c.twitterUrl ?? null,
+    linkedinUrl: c.linkedinUrl ?? null,
+    updatedAt: c.updatedAt,
+  }) : null;
 
   router.get("/", async (req, res, next) => {
     try {
@@ -193,6 +212,7 @@ export const buildGrantRouter = (
 
       // ---------------- Execute ----------------
       const [data, total] = await qb.getManyAndCount();
+      const profiles = await contributorProfilesByAddress(data.map((g) => g.recipient));
 
       // Add isWatched flag if user address is provided
       let watchedGrantIds: Set<number> = new Set();
@@ -207,6 +227,7 @@ export const buildGrantRouter = (
       const responseData = data.map(g => ({
         ...localizeGrant(g, lang),
         isWatched: watchedGrantIds.has(g.id),
+        recipientProfile: toProfile(profiles.get(g.recipient)),
       }));
 
       const payload = {
@@ -246,6 +267,7 @@ export const buildGrantRouter = (
         res.status(404).json({ error: "Grant not found" });
         return;
       }
+      const recipientProfile = await contributorRepo.findOne({ where: { address: grant.recipient } });
 
       const userAddress = req.header("x-user-address");
       let isWatched = false;
@@ -256,7 +278,7 @@ export const buildGrantRouter = (
         isWatched = !!watchlistEntry;
       }
 
-      res.json({ data: { ...localizeGrant(grant, lang), isWatched } });
+      res.json({ data: { ...localizeGrant(grant, lang), isWatched, recipientProfile: toProfile(recipientProfile ?? undefined) } });
     } catch (error) {
       next(error);
     }

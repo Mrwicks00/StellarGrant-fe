@@ -20,6 +20,7 @@ import { ResponseCacheService } from "./services/response-cache";
 import { buildSearchRouter } from "./routes/search";
 import { buildWatchlistRouter } from "./routes/watchlist";
 import { UserWatchlist } from "./entities/UserWatchlist";
+import { buildProfilesRouter } from "./routes/profiles";
 import { ReconciliationService } from "./services/reconciliation-service";
 import { LeaderboardService } from "./services/leaderboard-service";
 import { SignatureService } from "./services/signature-service";
@@ -122,7 +123,7 @@ export const createApp = (dataSource: DataSource, sorobanClient: SorobanContract
   app.use("/grants", buildGrantRouter(grantRepo, grantSyncService, signatureService, responseCache));
   app.use("/milestone_proof", buildMilestoneProofRouter(proofRepo, signatureService, responseCache));
   app.use("/leaderboard", buildLeaderboardRouter(leaderboardService));
-  app.use("/activity", buildActivityRouter(activityRepo));
+  app.use("/activity", buildActivityRouter(activityRepo, contributorRepo));
   app.use(
     "/admin",
     adminMiddleware,
@@ -132,6 +133,7 @@ export const createApp = (dataSource: DataSource, sorobanClient: SorobanContract
   app.use("/notifications", buildNotificationsRouter(contributorRepo));
   app.use("/analytics", buildAnalyticsRouter(grantRepo, grantViewRepo));
   app.use("/search", buildSearchRouter(dataSource));
+  app.use("/profiles", buildProfilesRouter(contributorRepo));
   app.use("/watchlist", buildWatchlistRouter(dataSource.getRepository(UserWatchlist), grantRepo));
   app.get("/config/fee", async (req, res) => {
     const fee = await configService.getFeePercentage();
