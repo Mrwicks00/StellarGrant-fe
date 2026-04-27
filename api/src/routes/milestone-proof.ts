@@ -95,6 +95,7 @@ export const buildMilestoneProofRouter = (
         }
       }
 
+      await responseCache.invalidateGrantsAndStats();
       // Broadcast to reviewers (simplified for now as broadcast)
       notificationService.broadcast("milestone_submitted", {
         grantId: payload.grantId,

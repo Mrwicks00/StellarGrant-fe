@@ -21,10 +21,12 @@ import { buildActivityRouter } from "./routes/activity";
 import { buildProofsRouter } from "./routes/proofs";
 import { buildNotificationsRouter } from "./routes/notifications";
 import { buildAnalyticsRouter } from "./routes/analytics";
+import { buildStatsRouter } from "./routes/stats";
+import { GrantSyncService } from "./services/grant-sync-service";
+import { ResponseCacheService } from "./services/response-cache";
 import { buildSearchRouter } from "./routes/search";
 import { buildWatchlistRouter } from "./routes/watchlist";
 import { UserWatchlist } from "./entities/UserWatchlist";
-import { GrantSyncService } from "./services/grant-sync-service";
 import { ReconciliationService } from "./services/reconciliation-service";
 import { LeaderboardService } from "./services/leaderboard-service";
 import { SignatureService } from "./services/signature-service";
@@ -129,7 +131,11 @@ export const createApp = (dataSource: DataSource, sorobanClient: SorobanContract
   app.use("/milestone_proof", buildMilestoneProofRouter(proofRepo, signatureService));
   app.use("/leaderboard", buildLeaderboardRouter(leaderboardService));
   app.use("/activity", buildActivityRouter(activityRepo));
-  app.use("/admin", adminMiddleware, buildAdminRouter(grantSyncService, contributorRepo, auditLogRepo, reconciliationService));
+  app.use(
+    "/admin",
+    adminMiddleware,
+    buildAdminRouter(grantSyncService, contributorRepo, auditLogRepo, responseCache, reconciliationService),
+  );
   app.use("/proofs", buildProofsRouter(ipfsService));
   app.use("/notifications", buildNotificationsRouter(contributorRepo));
   app.use("/analytics", buildAnalyticsRouter(grantRepo, grantViewRepo));

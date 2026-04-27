@@ -17,6 +17,7 @@ export class GrantSyncService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly sorobanClient: SorobanContractClient,
+    private readonly onInvalidatePublicCaches?: () => void | Promise<void>,
   ) {
     this.grantRepo = this.dataSource.getRepository(Grant);
     this.contributorRepo = this.dataSource.getRepository(Contributor);
@@ -26,6 +27,7 @@ export class GrantSyncService {
   }
 
   async syncAllGrants(): Promise<void> {
+    await this.onInvalidatePublicCaches?.();
     const grants = await this.sorobanClient.fetchGrants();
     for (const grant of grants) {
       const existingGrant = await this.grantRepo.findOne({ where: { id: grant.id } });
@@ -68,6 +70,7 @@ export class GrantSyncService {
   }
 
   async syncGrant(id: number): Promise<void> {
+    await this.onInvalidatePublicCaches?.();
     const grant = await this.sorobanClient.fetchGrantById(id);
     if (!grant) return;
     const existingGrant = await this.grantRepo.findOne({ where: { id } });
