@@ -30,7 +30,6 @@ interface GrantCardProps {
 
 export function GrantCard({ grant, onClick, showOwner = false, compact = false }: GrantCardProps) {
   const [tokenMetadata, setTokenMetadata] = useState<TokenMetadata | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     async function fetchMetadata() {
@@ -38,7 +37,6 @@ export function GrantCard({ grant, onClick, showOwner = false, compact = false }
         const metadata = await getTokenMetadata(grant.token);
         setTokenMetadata(metadata);
       }
-      setIsLoading(false);
     }
     fetchMetadata();
   }, [grant.token]);

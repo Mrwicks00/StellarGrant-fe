@@ -18,13 +18,8 @@ interface MilestoneListProps {
   grantToken?: string; // Fallback token if milestone doesn't specify one
 }
 
-interface MilestoneDisplay extends MilestoneType {
-  statusLabel: string;
-  tokenSymbol: string;
-  amountFormatted: string;
-}
 
-export function MilestoneList({ milestones, grantId, grantToken }: MilestoneListProps) {
+export function MilestoneList({ milestones, grantId: _grantId, grantToken }: MilestoneListProps) {
   const [tokenMetadataMap, setTokenMetadataMap] = useState<Map<string, TokenMetadata>>(new Map());
   const [isLoading, setIsLoading] = useState(true);
 
@@ -90,14 +85,6 @@ export function MilestoneList({ milestones, grantId, grantToken }: MilestoneList
     return formatTokenAmount(milestone.amount, decimals, { symbol, showSymbol: true });
   };
 
-  const getTokenSymbol = (milestone: MilestoneType): string => {
-    const token = milestone.token || grantToken;
-    if (!token) return "XLM";
-
-    const metadata = tokenMetadataMap.get(token);
-    return metadata?.symbol ?? "UNKNOWN";
-  };
-
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -119,7 +106,6 @@ export function MilestoneList({ milestones, grantId, grantToken }: MilestoneList
         const statusLabel = getMilestoneStatus(milestone);
         const statusColor = getStatusColor(statusLabel);
         const amountFormatted = formatMilestoneAmount(milestone);
-        const tokenSymbol = getTokenSymbol(milestone);
 
         return (
           <div

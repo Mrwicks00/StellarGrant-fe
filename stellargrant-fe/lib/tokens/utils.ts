@@ -4,8 +4,6 @@
  * Helper functions for token formatting, parsing, and calculations.
  */
 
-import { TokenMetadata } from "@/types";
-
 /**
  * Format a token amount for display
  * @param amount - The raw amount (in smallest units, e.g., stroops)
