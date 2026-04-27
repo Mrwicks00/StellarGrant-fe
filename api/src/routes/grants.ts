@@ -1,13 +1,15 @@
 import { Router } from "express";
-import { Repository } from "typeorm";
+import { In, Repository } from "typeorm";
 import { Grant } from "../entities/Grant";
+import { Milestone } from "../entities/Milestone";
+import { MilestoneProof } from "../entities/MilestoneProof";
 import { UserWatchlist } from "../entities/UserWatchlist";
 import { Activity } from "../entities/Activity";
 import { PlatformConfig } from "../entities/PlatformConfig";
 import { FeeCollection } from "../entities/FeeCollection";
 import { GrantSyncService } from "../services/grant-sync-service";
 import { SignatureService } from "../services/signature-service";
-import { ResponseCacheService, responseCacheKeys } from "../services/response-cache";
+import { createProofLookup, enrichMilestone, summarizeMilestones } from "../utils/milestones";
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -101,6 +103,8 @@ export const buildGrantRouter = (
   const activityRepo = grantRepo.manager.getRepository(Activity);
   const configRepo = grantRepo.manager.getRepository(PlatformConfig);
   const feeRepo = grantRepo.manager.getRepository(FeeCollection);
+  const milestoneRepo = grantRepo.manager.getRepository(Milestone);
+  const proofRepo = grantRepo.manager.getRepository(MilestoneProof);
 
   router.get("/", async (req, res, next) => {
     try {
@@ -155,11 +159,8 @@ export const buildGrantRouter = (
       // ---------------- Query Builder ----------------
       const qb = grantRepo.createQueryBuilder("grant");
 
-      // ⚡ Filters first (better index usage)
       if (statusFilter) {
-        qb.andWhere("LOWER(grant.status) = :status", {
-          status: statusFilter,
-        });
+        qb.andWhere("LOWER(grant.status) = :status", { status: statusFilter });
       }
 
       if (funderFilter) {
@@ -169,27 +170,28 @@ export const buildGrantRouter = (
       }
 
       /**
-       * FIXED TAG LOGIC:
-       * Instead of multiple AND LIKE (too strict + slow),
-       * we use OR grouping → matches ANY tag
+       * AND tag logic: every requested tag must appear in the grant's tags column.
+       * One andWhere per tag so all conditions must be satisfied simultaneously.
        */
       if (tagsFilter.length > 0) {
         tagsFilter.forEach((tag, idx) => {
-          qb.andWhere("LOWER(COALESCE(grant.tags, '')) LIKE :tag" + idx, {
-            ["tag" + idx]: `%${tag}%`,
-          });
+          qb.andWhere(
+            "LOWER(COALESCE(grant.tags, '')) LIKE :tag" + idx,
+            { ["tag" + idx]: `%${tag}%` },
+          );
         });
       }
 
-      // ---------------- Sorting + Pagination ----------------
+      // ---------------- Sorting ----------------
+      // totalAmount is stored as varchar so we must cast to a number before
+      // sorting, otherwise "9000" sorts after "10000" lexicographically.
       if (sortBy === "totalAmount") {
-        qb.orderBy("CAST(grant.totalAmount AS DECIMAL)", order);
+        qb.orderBy("CAST(grant.totalAmount AS REAL)", order);
       } else {
         qb.orderBy(`grant.${sortBy}`, order);
       }
-      
-      qb.skip((page - 1) * limit)
-        .take(limit);
+
+      qb.skip((page - 1) * limit).take(limit);
 
       // ---------------- Execute ----------------
       const [data, total] = await qb.getManyAndCount();
@@ -204,9 +206,38 @@ export const buildGrantRouter = (
         watchedGrantIds = new Set(watchlistEntries.map(e => e.grantId));
       }
 
+      const grantIds = data.map((grant) => grant.id);
+      const milestones = grantIds.length > 0
+        ? await milestoneRepo.find({
+            where: { grantId: In(grantIds) },
+            order: { deadline: "ASC", idx: "ASC" },
+          })
+        : [];
+      const proofs = grantIds.length > 0
+        ? await proofRepo.find({
+            where: { grantId: In(grantIds) },
+            select: {
+              grantId: true,
+              milestoneIdx: true,
+              createdAt: true,
+            },
+          })
+        : [];
+      const proofLookup = createProofLookup(proofs);
+      const milestonesByGrantId = new Map<number, ReturnType<typeof enrichMilestone>[]>();
+
+      for (const milestone of milestones) {
+        const enriched = enrichMilestone(milestone, proofLookup.get(`${milestone.grantId}:${milestone.idx}`));
+        const current = milestonesByGrantId.get(milestone.grantId) ?? [];
+        current.push(enriched);
+        milestonesByGrantId.set(milestone.grantId, current);
+      }
+
       const responseData = data.map(g => ({
         ...localizeGrant(g, lang),
         isWatched: watchedGrantIds.has(g.id),
+        milestoneSummary: summarizeMilestones(milestonesByGrantId.get(g.id) ?? []),
+        hasOverdueMilestones: (milestonesByGrantId.get(g.id) ?? []).some((milestone) => milestone.overdue),
       }));
 
       const payload = {
@@ -256,7 +287,32 @@ export const buildGrantRouter = (
         isWatched = !!watchlistEntry;
       }
 
-      res.json({ data: { ...localizeGrant(grant, lang), isWatched } });
+      const milestones = await milestoneRepo.find({
+        where: { grantId: id },
+        order: { deadline: "ASC", idx: "ASC" },
+      });
+      const proofs = await proofRepo.find({
+        where: { grantId: id },
+        select: {
+          grantId: true,
+          milestoneIdx: true,
+          createdAt: true,
+        },
+      });
+      const proofLookup = createProofLookup(proofs);
+      const enrichedMilestones = milestones.map((milestone) =>
+        enrichMilestone(milestone, proofLookup.get(`${milestone.grantId}:${milestone.idx}`)),
+      );
+
+      res.json({
+        data: {
+          ...localizeGrant(grant, lang),
+          isWatched,
+          milestones: enrichedMilestones,
+          milestoneSummary: summarizeMilestones(enrichedMilestones),
+          hasOverdueMilestones: enrichedMilestones.some((milestone) => milestone.overdue),
+        },
+      });
     } catch (error) {
       next(error);
     }
