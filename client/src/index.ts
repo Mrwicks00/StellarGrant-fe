@@ -1,4 +1,4 @@
-export { StellarGrantsSDK } from "./StellarGrantsSDK";
+export { StellarGrantsSDK, CONTRACT_INTERFACE_VERSION } from "./StellarGrantsSDK";
 export * from "./types";
 export * from "./errors/StellarGrantsError";
 export * from "./errors/parseSorobanError";
@@ -12,6 +12,9 @@ export type {
   MilestoneVoteInput,
   StellarGrantsSDKConfig,
   WalletAdapter,
+  WriteOptions,
+  FeePriority,
+  FeeEstimate,
 } from "./types";
 export { EventParser } from "./events";
 export type {
@@ -21,3 +24,10 @@ export type {
   GrantFundedData,
   MilestoneVotedData,
 } from "./events";
+export { uploadMetadataToIPFS, fetchMetadataFromIPFS } from "./ipfs";
+export type {
+  AllowanceResult,
+  AllowanceCheckResult,
+  IpfsUploadConfig,
+  IpfsUploadResult,
+} from "./types";

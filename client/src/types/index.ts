@@ -33,6 +33,60 @@ export type StellarGrantsSDKConfig = {
   pollingIntervalMs?: number;
   /** Maximum time in milliseconds to wait for a transaction confirmation. Defaults to 30000. */
   pollingTimeoutMs?: number;
+  /**
+   * Custom HTTP headers forwarded to every RPC request.
+   * Use for authentication tokens, API keys, or enterprise gateway requirements.
+   *
+   * @example { "X-Api-Key": "my-secret" }
+   */
+  customHeaders?: Record<string, string>;
+  /**
+   * Optional proxy URL that intercepts all RPC traffic.
+   * When set, the SDK routes every RPC call through this URL instead of
+   * `rpcUrl`. Useful in environments where direct RPC access is blocked by
+   * CORS or firewall policies.
+   *
+   * @example "https://my-proxy.example.com/stellar-rpc"
+   */
+  proxyUrl?: string;
+};
+
+/** Result of an allowance check. */
+export type AllowanceResult = {
+  /** Current approved amount (in base token units). */
+  amount: bigint;
+  /** Ledger sequence at which the allowance expires (0 = does not expire). */
+  expirationLedger: number;
+};
+
+/** Result returned by `checkAndSetAllowance`. */
+export type AllowanceCheckResult = {
+  /** Whether the allowance was already sufficient (no transaction needed). */
+  sufficient: boolean;
+  /** Current allowance before any update. */
+  current: bigint;
+  /** The required amount that was checked against. */
+  required: bigint;
+};
+
+/** Pinata IPFS upload configuration. */
+export type IpfsUploadConfig = {
+  /** Pinata API JWT (preferred) or API key for authentication. */
+  pinataJwt?: string;
+  /** Pinata API key (legacy). Use `pinataJwt` when available. */
+  pinataApiKey?: string;
+  /** Pinata API secret (legacy, required alongside `pinataApiKey`). */
+  pinataSecretKey?: string;
+  /** Optional display name for the pinned object. */
+  name?: string;
+};
+
+/** Result of a successful IPFS upload. */
+export type IpfsUploadResult = {
+  /** IPFS Content Identifier. */
+  cid: string;
+  /** Public gateway URL for convenient browser access. */
+  gatewayUrl: string;
 };
 
 /**
@@ -90,6 +144,32 @@ export type MilestoneVoteInput = {
 };
 
 /**
+ * Fee priority tiers used by the SDK when estimating transaction fees.
+ *
+ * - `"low"`    – 1.0× the simulated resource fee. Cheapest but may be slow
+ *               during network congestion.
+ * - `"medium"` – 1.5× the simulated resource fee (default). Balances cost
+ *               and inclusion speed.
+ * - `"high"`   – 2.0× the simulated resource fee. Prioritises fast inclusion
+ *               at higher cost.
+ */
+export type FeePriority = "low" | "medium" | "high";
+
+/**
+ * Per-priority fee estimate returned by `StellarGrantsSDK.estimateFees()`.
+ */
+export type FeeEstimate = {
+  /** Raw simulated resource fee (in stroops) before any multiplier. */
+  base: string;
+  /** Fee at low priority (1.0× base). */
+  low: string;
+  /** Fee at medium priority (1.5× base). */
+  medium: string;
+  /** Fee at high priority (2.0× base). */
+  high: string;
+};
+
+/**
  * Options for state-changing transaction invocations.
  */
 export type WriteOptions = {
@@ -99,4 +179,12 @@ export type WriteOptions = {
   transactionData?: any; // xdr.SorobanTransactionData
   /** Explicit fee to use, bypassing automatic calculation. */
   simulatedFee?: string;
+  /**
+   * Fee priority tier. When set this takes precedence over `feeMultiplier`
+   * (unless `simulatedFee` is also provided, which always wins).
+   *
+   * Defaults to `"medium"` when neither `feeMultiplier` nor `simulatedFee`
+   * is specified.
+   */
+  feePriority?: FeePriority;
 };
