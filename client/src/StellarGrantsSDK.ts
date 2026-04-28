@@ -781,5 +781,4 @@ export class StellarGrantsSDK {
       clearTimeout(timer);
     }
   }
-  }
 }
