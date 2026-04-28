@@ -59,6 +59,45 @@ export type StellarGrantsSDKConfig = {
    * `${horizonUrl}/fee_stats` when provided.
    */
   feeStatsEndpoint?: string;
+  /**
+   * Retry configuration for RPC calls. Helps mitigate transient network errors
+   * and rate limiting (HTTP 429) with exponential backoff.
+   */
+  retryConfig?: RetryConfig;
+};
+
+/**
+ * Configuration for automatic retry behavior on RPC calls.
+ */
+export type RetryConfig = {
+  /** Maximum number of retry attempts. Defaults to 3. */
+  maxAttempts?: number;
+  /** Initial delay in milliseconds before the first retry. Defaults to 1000ms. */
+  initialDelayMs?: number;
+  /** Multiplier for exponential backoff. Defaults to 2 (doubles delay each retry). */
+  backoffMultiplier?: number;
+  /** Maximum delay between retries in milliseconds. Defaults to 10000ms. */
+  maxDelayMs?: number;
+  /**
+   * Whether to retry on HTTP 429 (Too Many Requests) rate limit errors.
+   * Defaults to true.
+   */
+  retryOnRateLimit?: boolean;
+  /**
+   * Whether to retry on timeout errors. Defaults to true.
+   */
+  retryOnTimeout?: boolean;
+  /**
+   * Whether to retry on generic network errors. Defaults to true.
+   */
+  retryOnNetworkError?: boolean;
+  /**
+   * Optional callback for logging retry attempts. Useful for debugging.
+   * @param attempt - Current attempt number (1-indexed)
+   * @param error - The error that triggered the retry
+   * @param delayMs - Delay before the next retry
+   */
+  onRetry?: (attempt: number, error: Error, delayMs: number) => void;
 };
 
 /** Result of an allowance check. */

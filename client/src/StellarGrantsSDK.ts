@@ -26,6 +26,7 @@ import {
   WriteOptions,
 } from "./types";
 import { EventParser, ParsedEvent } from "./events";
+import { retryWithBackoff } from "./utils/retry";
 
 const READ_ONLY_SIMULATION_ACCOUNT =
   "GB3KJPLFUYN5VL6R3GU3EGCGVCKFDSD7BEDX42HWG5BWFKB3KQGJJRMA";
@@ -370,7 +371,7 @@ export class StellarGrantsSDK {
   ): Promise<rpc.Api.GetTransactionResponse> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      const response = await this.server.getTransaction(hash);
+      const response = await this.withRetry(() => this.server.getTransaction(hash)) as rpc.Api.GetTransactionResponse;
       if (response.status !== "NOT_FOUND") {
         if (response.status === "SUCCESS") {
           return response;
@@ -524,12 +525,32 @@ export class StellarGrantsSDK {
   // ---------------------------------------------------------------------------
 
   /**
+   * Internal helper to wrap server RPC calls with retry logic.
+   */
+  private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
+    if (!this.config.retryConfig) {
+      return fn();
+    }
+
+    return retryWithBackoff(fn, {
+      ...this.config.retryConfig,
+      onRetry: (attempt, error, delayMs) => {
+        console.warn(
+          `[StellarGrantsSDK] Retry attempt ${attempt}/${this.config.retryConfig?.maxAttempts} after ${delayMs}ms`,
+          { error: error.message }
+        );
+        this.config.retryConfig?.onRetry?.(attempt, error, delayMs);
+      },
+    });
+  }
+
+  /**
    * Internal helper for read-only contract invocations.
    */
   private async invokeRead(method: string, args: xdr.ScVal[]): Promise<unknown> {
     try {
       const tx = await this.buildTx(method, args, { skipAccountLookup: true });
-      const simulation = await this.server.simulateTransaction(tx);
+      const simulation = await this.withRetry(() => this.server.simulateTransaction(tx));
       this.ensureSimulationSuccess(simulation);
       return this.parseSimulationResult(simulation);
     } catch (error) {
@@ -561,7 +582,7 @@ export class StellarGrantsSDK {
       // wants to override the fee with a multiplier (mirrors original behaviour).
       if (!options?.transactionData || options?.feeMultiplier) {
         const txForSim = await this.buildTx(method, args);
-        const simulation = await this.server.simulateTransaction(txForSim) as any;
+        const simulation = await this.withRetry(() => this.server.simulateTransaction(txForSim)) as any;
         this.ensureSimulationSuccess(simulation);
 
         const base = Number(simulation.minResourceFee ?? 0);
@@ -590,7 +611,7 @@ export class StellarGrantsSDK {
       let prepared = tx;
 
       if (!options?.transactionData) {
-        prepared = await this.server.prepareTransaction(tx);
+        prepared = await this.withRetry(() => this.server.prepareTransaction(tx));
       }
 
       const networkPassphrase = await this.resolveNetworkPassphrase();
@@ -600,7 +621,7 @@ export class StellarGrantsSDK {
       );
       const signedTx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
 
-      const sent = await this.server.sendTransaction(signedTx);
+      const sent = await this.withRetry(() => this.server.sendTransaction(signedTx)) as rpc.Api.SendTransactionResponse;
       if (sent.status === "ERROR") {
         throw new StellarGrantsError(`Send failed: ${sent.errorResult ?? "unknown error"}`);
       }
@@ -669,7 +690,7 @@ export class StellarGrantsSDK {
     }
 
     const source = await this.requireSigner().getPublicKey();
-    return this.server.getAccount(source);
+    return this.withRetry(() => this.server.getAccount(source));
   }
 
   /**
