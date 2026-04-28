@@ -60,11 +60,7 @@ export function MilestoneList({ milestones, grantId: _grantId, grantToken }: Mil
     if (milestone.approved) return "Approved";
     if (milestone.submitted) return "Submitted";
     if (milestone.overdue) return "Overdue";
-<<<<<<< HEAD
-    if (milestone.daysUntilDeadline !== undefined && milestone.daysUntilDeadline <= 7) return "Due Soon";
-=======
     if ((milestone.daysUntilDeadline ?? Infinity) <= 7) return "Due Soon";
->>>>>>> aed01a2101f8b4a21392905b13c79de0d567092e
     return "Pending";
   };
 

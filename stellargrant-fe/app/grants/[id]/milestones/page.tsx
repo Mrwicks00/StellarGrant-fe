@@ -2,11 +2,7 @@
 
 import { use, useEffect, useState } from "react";
 import { MilestoneList } from "@/components/milestones";
-<<<<<<< HEAD
-import { Milestone } from "@/types";
-=======
 import type { Milestone } from "@/types";
->>>>>>> aed01a2101f8b4a21392905b13c79de0d567092e
 
 /**
  * Milestone List Page
@@ -20,11 +16,6 @@ interface MilestonesPageProps {
   }>;
 }
 
-<<<<<<< HEAD
-export default function MilestonesPage({ params }: MilestonesPageProps) {
-  const [milestones, setMilestones] = useState<Milestone[]>([]);
-  const [title, setTitle] = useState(`Grant #${params.id}`);
-=======
 /** Raw shape returned by the API (subset of the full Milestone type) */
 type MilestoneResponse = {
   idx: number;
@@ -66,7 +57,6 @@ export default function MilestonesPage({ params }: MilestonesPageProps) {
   const { id } = use(params);
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [title, setTitle] = useState(`Grant #${id}`);
->>>>>>> aed01a2101f8b4a21392905b13c79de0d567092e
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
