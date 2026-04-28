@@ -90,14 +90,6 @@ export function MilestoneList({ milestones, grantId: _grantId, grantToken }: Mil
     return formatTokenAmount(milestone.amount, decimals, { symbol, showSymbol: true });
   };
 
-  const getTokenSymbol = (milestone: MilestoneType): string => {
-    const token = milestone.token || grantToken;
-    if (!token) return "XLM";
-
-    const metadata = tokenMetadataMap.get(token);
-    return metadata?.symbol ?? "UNKNOWN";
-  };
-
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -119,7 +111,6 @@ export function MilestoneList({ milestones, grantId: _grantId, grantToken }: Mil
         const statusLabel = getMilestoneStatus(milestone);
         const statusColor = getStatusColor(statusLabel);
         const amountFormatted = formatMilestoneAmount(milestone);
-        const _tokenSymbol = getTokenSymbol(milestone);
 
         return (
           <div

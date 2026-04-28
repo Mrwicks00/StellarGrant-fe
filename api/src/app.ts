@@ -56,6 +56,8 @@ import { metricsService } from "./services/metrics-service";
 import { buildCommunitiesRouter } from "./routes/communities";
 import { buildMilestoneCommentsRouter } from "./routes/milestone-comments";
 import { buildHealthRouter } from "./routes/health";
+import swaggerUi from "swagger-ui-express";
+import swaggerJsdoc from "swagger-jsdoc";
 
 export const createApp = (dataSource: DataSource, sorobanClient: SorobanContractClient) => {
   const app = express();
@@ -153,6 +155,36 @@ export const createApp = (dataSource: DataSource, sorobanClient: SorobanContract
   // Health check endpoints (no versioning, no rate limiting)
   app.get("/health", (_req, res) => res.json({ ok: true, version: "v1" }));
   app.use("/health", buildHealthRouter(dataSource, sorobanClient));
+  // Health check endpoint (no versioning)
+  app.get("/health", async (_req, res) => {
+    const health = {
+      ok: true,
+      version: "v1",
+      services: {
+        database: "ok" as "ok" | "error",
+        soroban: "ok" as "ok" | "error",
+      },
+    };
+
+    try {
+      // Check database connectivity
+      await dataSource.query("SELECT 1");
+    } catch (error) {
+      health.services.database = "error";
+      health.ok = false;
+    }
+
+    try {
+      // Check Soroban RPC status
+      await sorobanClient.getLatestLedger();
+    } catch (error) {
+      health.services.soroban = "error";
+      health.ok = false;
+    }
+
+    const statusCode = health.ok ? 200 : 503;
+    res.status(statusCode).json(health);
+  });
   app.get("/metrics", async (req, res) => {
     if (!isMetricsAuthorized(req)) {
       res.setHeader("WWW-Authenticate", "Basic realm=metrics");
@@ -163,6 +195,85 @@ export const createApp = (dataSource: DataSource, sorobanClient: SorobanContract
     res.setHeader("Content-Type", metricsService.getContentType());
     res.send(await metricsService.getMetricsText());
   });
+
+  // --- OpenAPI / Swagger UI (interactive docs)
+  const swaggerDefinition = {
+    openapi: "3.0.1",
+    info: {
+      title: "StellarGrants API",
+      version: "1.0.0",
+      description: "Interactive API docs for the StellarGrants API",
+    },
+    servers: [{ url: "/", description: "Local" }],
+    components: {
+      securitySchemes: {
+        bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT" },
+      },
+      schemas: {
+        Grant: {
+          type: "object",
+          properties: {
+            id: { type: "integer" },
+            owner: { type: "string" },
+            title: { type: "string" },
+            description: { type: "string" },
+            budget: { type: "string" },
+          },
+        },
+        Milestone: {
+          type: "object",
+          properties: {
+            grantId: { type: "integer" },
+            idx: { type: "integer" },
+            title: { type: "string" },
+            proofHash: { type: "string" },
+          },
+        },
+      },
+    },
+    paths: {
+      "/grants": {
+        get: {
+          summary: "List grants",
+          security: [{ bearerAuth: [] }],
+          responses: {
+            "200": {
+              description: "A list of grants",
+              content: { "application/json": { schema: { type: "object", properties: { data: { type: "array", items: { $ref: "#/components/schemas/Grant" } } } } } }
+            }
+          }
+        }
+      },
+      "/grants/{id}": {
+        get: {
+          summary: "Get a single grant",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+          security: [{ bearerAuth: [] }],
+          responses: { "200": { description: "Grant", content: { "application/json": { schema: { $ref: "#/components/schemas/Grant" } } } } }
+        }
+      },
+      "/milestone_approvals": {
+        post: {
+          summary: "Submit a milestone approval",
+          security: [{ bearerAuth: [] }],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { type: "object", properties: { grantId: { type: "integer" }, milestoneIdx: { type: "integer" }, reviewerStellarAddress: { type: "string" }, approved: { type: "boolean" } }, required: ["grantId","milestoneIdx","reviewerStellarAddress","approved"] } } }
+          },
+          responses: { "200": { description: "Approval saved" } }
+        }
+      }
+    }
+  } as const;
+
+  const options = {
+    definition: swaggerDefinition,
+    // no files to scan for JSDoc at the moment — definition contains main paths
+    apis: [],
+  };
+  const swaggerSpec = swaggerJsdoc(options as any);
+  app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+  app.get("/api-docs.json", (_req, res) => res.json(swaggerSpec));
 
   // Apply rate limiting
   app.use(rateLimiter);
@@ -186,7 +297,7 @@ export const createApp = (dataSource: DataSource, sorobanClient: SorobanContract
   app.use("/dashboard", buildDashboardRouter(grantRepo, milestoneRepo, proofRepo, grantSyncService));
   app.use("/analytics", buildAnalyticsRouter(grantRepo, grantViewRepo));
   app.use("/search", buildSearchRouter(dataSource));
-  app.use("/profiles", buildProfilesRouter(contributorRepo));
+  app.use("/profiles", buildProfilesRouter(contributorRepo, grantRepo));
   app.use("/watchlist", buildWatchlistRouter(dataSource.getRepository(UserWatchlist), grantRepo));
   app.use("/communities", buildCommunitiesRouter(communityRepo, grantRepo, activityRepo));
   app.use(buildMilestoneCommentsRouter(milestoneRepo, milestoneCommentRepo, grantReviewerRepo));

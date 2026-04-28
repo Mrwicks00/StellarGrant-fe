@@ -7,12 +7,15 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
+import { GrantData, MilestoneData } from "./types";
 import { parseSorobanError } from "./errors/parseSorobanError";
 import { StellarGrantsError } from "./errors/StellarGrantsError";
 import {
   AllowanceCheckResult,
   AllowanceResult,
   FeeEstimate,
+  FeeLevelModifiers,
+  FeeNetworkLoad,
   FeePriority,
   GrantCreateInput,
   GrantFundInput,
@@ -23,6 +26,7 @@ import {
   WriteOptions,
 } from "./types";
 import { EventParser, ParsedEvent } from "./events";
+import { retryWithBackoff } from "./utils/retry";
 
 const READ_ONLY_SIMULATION_ACCOUNT =
   "GB3KJPLFUYN5VL6R3GU3EGCGVCKFDSD7BEDX42HWG5BWFKB3KQGJJRMA";
@@ -36,12 +40,23 @@ const READ_ONLY_SIMULATION_ACCOUNT =
  */
 export const CONTRACT_INTERFACE_VERSION = 1;
 
-/** Multipliers applied to `minResourceFee` for each priority tier. */
-const FEE_PRIORITY_MULTIPLIERS: Record<FeePriority, number> = {
+/** Default multipliers applied to `minResourceFee` for each priority tier. */
+const DEFAULT_FEE_LEVEL_MODIFIERS: FeeLevelModifiers = {
   low: 1.0,
   medium: 1.5,
   high: 2.0,
 };
+
+const DYNAMIC_FEE_LEVELS: Array<{
+  maxUsage: number;
+  load: FeeNetworkLoad;
+  modifiers: FeeLevelModifiers;
+}> = [
+  { maxUsage: 0.5, load: "low", modifiers: { low: 0.9, medium: 1.2, high: 1.6 } },
+  { maxUsage: 0.8, load: "moderate", modifiers: { low: 1.0, medium: 1.5, high: 2.0 } },
+  { maxUsage: 0.95, load: "high", modifiers: { low: 1.2, medium: 1.8, high: 2.6 } },
+  { maxUsage: Infinity, load: "surge", modifiers: { low: 1.6, medium: 2.5, high: 3.5 } },
+];
 
 /**
  * Encapsulated client for StellarGrants Soroban contract interactions.
@@ -156,8 +171,10 @@ export class StellarGrantsSDK {
    * @param grantId The unique numeric ID of the grant.
    * @returns A promise that resolves to the grant data.
    */
-  async grantGet(grantId: number): Promise<unknown> {
-    return this.invokeRead("grant_get", [nativeToScVal(grantId, { type: "u32" })]);
+  async grantGet(grantId: number): Promise<GrantData | null> {
+    const raw = await this.invokeRead("grant_get", [nativeToScVal(grantId, { type: "u32" })]);
+    if (raw === null) return null;
+    return this.assertGrantShape(raw);
   }
 
   /**
@@ -167,11 +184,13 @@ export class StellarGrantsSDK {
    * @param milestoneIdx The 0-based index of the milestone.
    * @returns A promise that resolves to the milestone data.
    */
-  async milestoneGet(grantId: number, milestoneIdx: number): Promise<unknown> {
-    return this.invokeRead("milestone_get", [
+  async milestoneGet(grantId: number, milestoneIdx: number): Promise<MilestoneData | null> {
+    const raw = await this.invokeRead("milestone_get", [
       nativeToScVal(grantId, { type: "u32" }),
       nativeToScVal(milestoneIdx, { type: "u32" }),
     ]);
+    if (raw === null) return null;
+    return this.assertMilestoneShape(raw);
   }
 
   /**
@@ -195,16 +214,26 @@ export class StellarGrantsSDK {
     const simulation = await this.server.simulateTransaction(tx) as any;
     this.ensureSimulationSuccess(simulation);
 
-    const base = Number(simulation.minResourceFee ?? 0);
+    const simulationBase = Number(simulation.minResourceFee ?? 0);
+    const dynamicFees = await this.resolveDynamicFeeModifiers();
+    const recommendedBase = dynamicFees?.recommendedBaseFee ?? simulationBase;
+    const effectiveBase = Math.max(simulationBase, recommendedBase);
+    const modifiers = dynamicFees?.modifiers ?? DEFAULT_FEE_LEVEL_MODIFIERS;
 
     const calc = (multiplier: number) =>
-      String(Math.ceil(base * multiplier));
+      String(Math.ceil(effectiveBase * multiplier));
 
     return {
-      base: String(base),
-      low: calc(FEE_PRIORITY_MULTIPLIERS.low),
-      medium: calc(FEE_PRIORITY_MULTIPLIERS.medium),
-      high: calc(FEE_PRIORITY_MULTIPLIERS.high),
+      base: String(simulationBase),
+      ...(dynamicFees?.recommendedBaseFee !== undefined
+        ? { recommendedBase: String(dynamicFees.recommendedBaseFee) }
+        : {}),
+      low: calc(modifiers.low),
+      medium: calc(modifiers.medium),
+      high: calc(modifiers.high),
+      modifiers,
+      networkLoad: dynamicFees?.networkLoad ?? "moderate",
+      source: dynamicFees ? "horizon" : "simulation-fallback",
     };
   }
 
@@ -342,7 +371,7 @@ export class StellarGrantsSDK {
   ): Promise<rpc.Api.GetTransactionResponse> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      const response = await this.server.getTransaction(hash);
+      const response = await this.withRetry(() => this.server.getTransaction(hash)) as rpc.Api.GetTransactionResponse;
       if (response.status !== "NOT_FOUND") {
         if (response.status === "SUCCESS") {
           return response;
@@ -496,12 +525,32 @@ export class StellarGrantsSDK {
   // ---------------------------------------------------------------------------
 
   /**
+   * Internal helper to wrap server RPC calls with retry logic.
+   */
+  private async withRetry<T>(fn: () => Promise<T>): Promise<T> {
+    if (!this.config.retryConfig) {
+      return fn();
+    }
+
+    return retryWithBackoff(fn, {
+      ...this.config.retryConfig,
+      onRetry: (attempt, error, delayMs) => {
+        console.warn(
+          `[StellarGrantsSDK] Retry attempt ${attempt}/${this.config.retryConfig?.maxAttempts} after ${delayMs}ms`,
+          { error: error.message }
+        );
+        this.config.retryConfig?.onRetry?.(attempt, error, delayMs);
+      },
+    });
+  }
+
+  /**
    * Internal helper for read-only contract invocations.
    */
   private async invokeRead(method: string, args: xdr.ScVal[]): Promise<unknown> {
     try {
       const tx = await this.buildTx(method, args, { skipAccountLookup: true });
-      const simulation = await this.server.simulateTransaction(tx);
+      const simulation = await this.withRetry(() => this.server.simulateTransaction(tx));
       this.ensureSimulationSuccess(simulation);
       return this.parseSimulationResult(simulation);
     } catch (error) {
@@ -533,16 +582,20 @@ export class StellarGrantsSDK {
       // wants to override the fee with a multiplier (mirrors original behaviour).
       if (!options?.transactionData || options?.feeMultiplier) {
         const txForSim = await this.buildTx(method, args);
-        const simulation = await this.server.simulateTransaction(txForSim) as any;
+        const simulation = await this.withRetry(() => this.server.simulateTransaction(txForSim)) as any;
         this.ensureSimulationSuccess(simulation);
 
         const base = Number(simulation.minResourceFee ?? 0);
+        const dynamicFees = await this.resolveDynamicFeeModifiers();
+        const recommendedBase = dynamicFees?.recommendedBaseFee ?? base;
+        const effectiveBase = Math.max(base, recommendedBase);
 
         if (options?.feeMultiplier) {
-          finalFee = String(Math.ceil(base * options.feeMultiplier));
+          finalFee = String(Math.ceil(effectiveBase * options.feeMultiplier));
         } else {
           const priority: FeePriority = options?.feePriority ?? "medium";
-          finalFee = String(Math.ceil(base * FEE_PRIORITY_MULTIPLIERS[priority]));
+          const modifiers = dynamicFees?.modifiers ?? DEFAULT_FEE_LEVEL_MODIFIERS;
+          finalFee = String(Math.ceil(effectiveBase * modifiers[priority]));
         }
       }
 
@@ -558,7 +611,7 @@ export class StellarGrantsSDK {
       let prepared = tx;
 
       if (!options?.transactionData) {
-        prepared = await this.server.prepareTransaction(tx);
+        prepared = await this.withRetry(() => this.server.prepareTransaction(tx));
       }
 
       const networkPassphrase = await this.resolveNetworkPassphrase();
@@ -568,7 +621,7 @@ export class StellarGrantsSDK {
       );
       const signedTx = TransactionBuilder.fromXDR(signedXdr, networkPassphrase);
 
-      const sent = await this.server.sendTransaction(signedTx);
+      const sent = await this.withRetry(() => this.server.sendTransaction(signedTx)) as rpc.Api.SendTransactionResponse;
       if (sent.status === "ERROR") {
         throw new StellarGrantsError(`Send failed: ${sent.errorResult ?? "unknown error"}`);
       }
@@ -637,7 +690,7 @@ export class StellarGrantsSDK {
     }
 
     const source = await this.requireSigner().getPublicKey();
-    return this.server.getAccount(source);
+    return this.withRetry(() => this.server.getAccount(source));
   }
 
   /**
@@ -656,5 +709,97 @@ export class StellarGrantsSDK {
     const retval = simulation?.result?.retval;
     if (!retval) return null;
     return scValToNative(retval);
+  }
+
+  private assertGrantShape(raw: any): GrantData {
+    // Basic runtime shape checks and conversions to help TypeScript callers.
+    const obj = raw as any;
+    if (obj == null) throw new Error("Invalid grant: null/undefined");
+    const id = Number(obj.id ?? obj["id"] ?? obj._id ?? obj._native?.id);
+    if (!Number.isFinite(id)) {
+      throw new Error("Invalid grant: missing numeric id");
+    }
+    const out: GrantData = { id };
+    if (obj.owner) out.owner = String(obj.owner);
+    if (obj.title) out.title = String(obj.title);
+    if (obj.description) out.description = String(obj.description);
+    if (obj.budget !== undefined) out.budget = typeof obj.budget === "bigint" ? obj.budget : obj.budget;
+    if (obj.deadline !== undefined) out.deadline = obj.deadline;
+    if (obj.milestoneCount !== undefined) out.milestoneCount = Number(obj.milestoneCount);
+    if (obj.status) out.status = String(obj.status);
+    // copy any other fields
+    Object.keys(obj).forEach((k) => { if ((out as any)[k] === undefined) (out as any)[k] = obj[k]; });
+    return out;
+  }
+
+  private assertMilestoneShape(raw: any): MilestoneData {
+    const obj = raw as any;
+    if (obj == null) throw new Error("Invalid milestone: null/undefined");
+    const out: MilestoneData = {};
+    if (obj.grantId !== undefined) out.grantId = Number(obj.grantId);
+    if (obj.idx !== undefined) out.idx = Number(obj.idx);
+    if (obj.title) out.title = String(obj.title);
+    if (obj.proofHash) out.proofHash = String(obj.proofHash);
+    if (obj.approved !== undefined) out.approved = Boolean(obj.approved);
+    if (obj.approvals !== undefined) out.approvals = Number(obj.approvals);
+    if (obj.status) out.status = String(obj.status);
+    Object.keys(obj).forEach((k) => { if ((out as any)[k] === undefined) (out as any)[k] = obj[k]; });
+    return out;
+  }
+
+  private async resolveDynamicFeeModifiers(): Promise<{
+    modifiers: FeeLevelModifiers;
+    networkLoad: FeeNetworkLoad;
+    recommendedBaseFee?: number;
+  } | null> {
+    const endpoint = this.config.feeStatsEndpoint
+      ?? (this.config.horizonUrl
+        ? `${this.config.horizonUrl.replace(/\/$/, "")}/fee_stats`
+        : undefined);
+
+    if (!endpoint) {
+      return null;
+    }
+
+    try {
+      const stats = await this.fetchJsonWithTimeout(endpoint, 5000);
+      const usage = Number(stats?.ledger_capacity_usage);
+      if (!Number.isFinite(usage)) {
+        return null;
+      }
+
+      const feeBuckets = stats?.max_fee ?? {};
+      const recommendedBaseFee = Number(
+        feeBuckets.p70 ?? feeBuckets.p60 ?? feeBuckets.p50 ?? 0,
+      );
+
+      const level = DYNAMIC_FEE_LEVELS.find((entry) => usage <= entry.maxUsage);
+      if (!level) return null;
+
+      return {
+        modifiers: level.modifiers,
+        networkLoad: level.load,
+        ...(Number.isFinite(recommendedBaseFee) && recommendedBaseFee > 0
+          ? { recommendedBaseFee }
+          : {}),
+      };
+    } catch (error) {
+      console.warn("Failed to fetch dynamic fee stats; falling back to static multipliers", error);
+      return null;
+    }
+  }
+
+  private async fetchJsonWithTimeout(url: string, timeoutMs: number): Promise<any> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.json();
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
