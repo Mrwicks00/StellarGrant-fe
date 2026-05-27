@@ -105,7 +105,7 @@ export function useContractTransaction(): UseContractTransactionResult {
       let signedXdr: string;
       try {
         signedXdr = await walletSign(preparedXdr);
-      } catch (err) {
+      } catch (_err) {
         throw new Error("Transaction rejected by user");
       }
 
