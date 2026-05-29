@@ -32,3 +32,6 @@ export type { PageHeaderProps } from "./PageHeader";
 
 export { FileUpload } from "./FileUpload";
 export type { FileUploadProps } from "./FileUpload";
+
+export { QRCode } from "./QRCode";
+export type { QRCodeProps } from "./QRCode";

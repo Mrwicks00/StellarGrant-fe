@@ -138,6 +138,34 @@ describe("stripMarkdown", () => {
   });
 });
 
+// ── XSS audit: IPFS / user-supplied HTML ────────────────────────────────────
+describe("sanitizeHtml — XSS audit", () => {
+  it("strips javascript: href from anchor tags", () => {
+    const dirty = '<a href="javascript:alert(1)">click</a>';
+    const clean = sanitizeHtml(dirty, testSanitizer);
+    expect(clean).not.toContain("javascript:");
+  });
+
+  it("strips onload attribute from img tags", () => {
+    const dirty = '<img src="x" onload="steal()">';
+    const clean = sanitizeHtml(dirty, testSanitizer);
+    expect(clean).not.toContain("onload");
+  });
+
+  it("does not strip allowed safe tags", () => {
+    const safe = "<p><strong>Bold</strong> and <em>italic</em></p>";
+    expect(sanitizeHtml(safe, testSanitizer)).toContain("strong");
+    expect(sanitizeHtml(safe, testSanitizer)).toContain("em");
+  });
+
+  it("handles nested script injection in markdown output", async () => {
+    const payload = "**safe**<script>document.cookie</script>";
+    const result = await markdownToSafeHtml(payload, testSanitizer);
+    expect(result).not.toContain("<script>");
+    expect(result).toContain("safe");
+  });
+});
+
 // ── validateDescriptionLength ────────────────────────────────────────────────
 describe("validateDescriptionLength", () => {
   it("passes a valid description", () => {
