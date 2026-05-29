@@ -1,9 +1,21 @@
-import { Column, Entity, PrimaryColumn } from "typeorm";
+import { Column, Entity, PrimaryGeneratedColumn } from "typeorm";
 
 @Entity()
 export class User {
-  @PrimaryColumn({ type: "varchar", length: 56 })
+  @PrimaryGeneratedColumn()
+  id!: number;
+
+  @Column({ type: "varchar", length: 56, unique: true })
   stellarAddress!: string;
+
+  @Column({ type: "varchar", nullable: true })
+  email?: string;
+
+  @Column({ type: "boolean", default: false })
+  notifyMilestoneApproved = false;
+
+  @Column({ type: "boolean", default: false })
+  notifyMilestoneSubmitted = false;
 
   @Column({ type: "varchar", nullable: true })
   githubId?: string;
