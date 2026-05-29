@@ -17,3 +17,4 @@ export { default as RichTextRenderer } from "./RichTextRenderer";
 export { StatBadge } from "./StatBadge";
 export { StatusDot } from "./StatusDot";
 export { PageTransition } from "./PageTransition";
+export { TokenAmountInput } from "./TokenAmountInput";
