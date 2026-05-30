@@ -3,8 +3,11 @@ import { env } from "./config/env";
 import { createApp } from "./app";
 import { buildDataSource } from "./db/data-source";
 import { MockSorobanContractClient } from "./soroban/mock-client";
+import { validateEnvOnStartup } from "./config/env-validation";
 
 const bootstrap = async () => {
+  validateEnvOnStartup();
+  
   const dataSource = buildDataSource();
   await dataSource.initialize();
 

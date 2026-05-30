@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
 import { Orbitron, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
+import { validateEnvOnStartup } from "../lib/config/env-validation";
+
+// Validate environment variables at startup
+validateEnvOnStartup();
 
 const orbitron = Orbitron({
   variable: "--font-orbitron",
