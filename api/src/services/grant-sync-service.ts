@@ -75,18 +75,25 @@ export class GrantSyncService {
       });
     }
 
-    // Award reputation for this grant (100 points per grant)
-    const reputationGain = 100;
-    contributor.reputation = (contributor.reputation ?? 0) + reputationGain;
-
-    await this.contributorRepo.save(contributor);
-
-    // Log the reputation gain
-    await this.reputationLogRepo.save({
-      address,
-      gain: reputationGain,
-      timestamp: new Date(),
+    // Check if we already logged reputation for this grant
+    const existingLog = await this.reputationLogRepo.findOne({
+      where: { address, gain: 100 },
+      order: { timestamp: "DESC" },
     });
+
+    // Only award reputation if it hasn't been logged yet
+    if (!existingLog) {
+      const reputationGain = 100;
+      contributor.reputation = (contributor.reputation ?? 0) + reputationGain;
+      await this.contributorRepo.save(contributor);
+
+      // Log the reputation gain
+      await this.reputationLogRepo.save({
+        address,
+        gain: reputationGain,
+        timestamp: new Date(),
+      });
+    }
   }
 
   private normalizeGrant(grant: SorobanGrant): Partial<Grant> {
