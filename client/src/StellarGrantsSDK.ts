@@ -159,34 +159,154 @@ export class StellarGrantsSDK {
     return this.server.getAccount(accountId);
   }
 
-  subscribeToEvents(callback: (event: any) => void): () => void {
+  subscribeToEvents(
+    callback: (event: any) => void,
+    options?: {
+      eventName?: string;
+      startCursor?: string;
+      pollIntervalMs?: number;
+      maxRetries?: number;
+      baseBackoffMs?: number;
+      maxBackoffMs?: number;
+      onError?: (error: any) => void;
+      onStatusChange?: (status: "connecting" | "active" | "reconnecting" | "closed") => void;
+    }
+  ): () => void {
     let active = true;
+    let cursor = options?.startCursor;
+    let retryCount = 0;
+    const maxRetries = options?.maxRetries ?? 10;
+    const pollIntervalMs = options?.pollIntervalMs ?? 5000;
+    const baseBackoffMs = options?.baseBackoffMs ?? 1000;
+    const maxBackoffMs = options?.maxBackoffMs ?? 30000;
+    const seenIds = new Set<string>();
 
-    const normalizeEvent = (raw: any) => ({
-      id: raw.id,
-      type: raw.type,
-      contractId: raw.contractId ?? raw.contract_id,
-      ledger: raw.ledger,
-      timestamp: raw.timestamp,
-      topic: raw.topic,
-      value: raw.value ?? raw._value,
-    });
+    const normalizeEvent = (raw: any) => {
+      let name = "unknown";
+      try {
+        if (raw.topic && Array.isArray(raw.topic) && raw.topic.length > 0) {
+          const firstTopic = raw.topic[0];
+          const scval = typeof firstTopic === "string" ? xdr.ScVal.fromXDR(firstTopic, "base64") : firstTopic;
+          name = String(scValToNative(scval));
+        }
+      } catch {
+        // ignore decoding errors
+      }
+
+      return {
+        id: raw.id,
+        type: raw.type,
+        contractId: raw.contractId ?? raw.contract_id,
+        ledger: raw.ledger,
+        timestamp: raw.timestamp,
+        topic: raw.topic,
+        value: raw.value ?? raw._value,
+        name,
+        pagingToken: raw.pagingToken ?? raw.paging_token,
+      };
+    };
 
     const poll = async () => {
       if (!active) return;
+
       try {
-        const response = await this.server.getEvents();
-        if (response?.events && Array.isArray(response.events)) {
-          for (const rawEvent of response.events) {
-            callback(normalizeEvent(rawEvent));
+        // Build getEvents filters and pagination
+        const request: any = {
+          filters: [
+            {
+              type: "contract",
+              contractIds: [this.config.contractId],
+            },
+          ],
+          pagination: {
+            limit: 100,
+          },
+        };
+
+        if (cursor) {
+          request.pagination.cursor = cursor;
+        }
+
+        if (options?.eventName) {
+          try {
+            const nameScVal = nativeToScVal(options.eventName, { type: "symbol" });
+            const nameXdr = nameScVal.toXDR("base64");
+            request.filters[0].topics = [[nameXdr]];
+          } catch {
+            // fallback if encoding fails
           }
         }
-      } catch {
-        // Swallow polling errors.
-      }
 
-      if (active) {
-        this.eventPollHandle = setTimeout(poll, 0);
+        options?.onStatusChange?.("connecting");
+        const response = await this.server.getEvents(request);
+
+        if (!active) return;
+
+        retryCount = 0;
+        options?.onStatusChange?.("active");
+
+        if (response?.events && Array.isArray(response.events)) {
+          let latestCursor = cursor;
+          const processedEvents: any[] = [];
+
+          for (const rawEvent of response.events) {
+            // Deduplicate
+            if (rawEvent.id) {
+              if (seenIds.has(rawEvent.id)) {
+                continue;
+              }
+              seenIds.add(rawEvent.id);
+            }
+
+            const normalized = normalizeEvent(rawEvent);
+
+            // Client-side event name filter backup
+            if (options?.eventName && normalized.name !== options.eventName) {
+              continue;
+            }
+
+            const token = rawEvent.pagingToken ?? rawEvent.paging_token;
+            if (token && (!latestCursor || token > latestCursor)) {
+              latestCursor = token;
+            }
+
+            processedEvents.push(normalized);
+          }
+
+          cursor = latestCursor;
+
+          // Prune seenIds to prevent memory leak
+          if (seenIds.size > 5000) {
+            const arr = Array.from(seenIds);
+            seenIds.clear();
+            arr.slice(arr.length - 1000).forEach((id) => seenIds.add(id));
+          }
+
+          for (const ev of processedEvents) {
+            callback(ev);
+          }
+        }
+
+        if (active) {
+          this.eventPollHandle = setTimeout(poll, pollIntervalMs);
+        }
+      } catch (err: any) {
+        if (!active) return;
+
+        retryCount++;
+        options?.onStatusChange?.("reconnecting");
+
+        if (retryCount > maxRetries) {
+          active = false;
+          options?.onStatusChange?.("closed");
+          if (options?.onError) {
+            options.onError(err);
+          }
+          return;
+        }
+
+        const delay = Math.random() * Math.min(maxBackoffMs, baseBackoffMs * 2 ** (retryCount - 1));
+        this.eventPollHandle = setTimeout(poll, delay);
       }
     };
 
@@ -194,12 +314,14 @@ export class StellarGrantsSDK {
 
     return () => {
       active = false;
+      options?.onStatusChange?.("closed");
       if (this.eventPollHandle) {
         clearTimeout(this.eventPollHandle);
         this.eventPollHandle = null;
       }
     };
   }
+
 
   async estimateFees(method: string, args: xdr.ScVal[], options?: { horizonUrl?: string; feePriority?: "low" | "medium" | "high"; simulatedFee?: string }): Promise<any> {
     const simulation = await this.server.simulateTransaction(await this.buildTx(method, args, options));
