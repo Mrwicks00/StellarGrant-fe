@@ -1,6 +1,7 @@
 export { StellarGrantsSDK } from "./StellarGrantsSDK";
 export { parseSorobanError } from "./errors/parseSorobanError";
-export { SorobanRevertError, StellarGrantsError } from "./errors/StellarGrantsError";
+export { ContractError, SorobanRevertError, StellarGrantsError } from "./errors/StellarGrantsError";
+export { ContractErrorCode, ErrorMessages } from "./errors/errorCodes";
 export type {
   GrantCreateInput,
   GrantFundInput,
