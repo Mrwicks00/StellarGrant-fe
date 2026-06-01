@@ -1,5 +1,6 @@
 export { getRpcClient, rpcClient, networkPassphraseConfig, getHorizonClient, horizonClient } from "./client";
 export { ContractClient, contractClient } from "./contract";
+export { decodeScVal } from "./decode";
 export { fetchContractEvents, decodeEvent } from "./events";
 export type { ContractEvent } from "./events";
 export { BatchBuilder } from "./batchBuilder";
