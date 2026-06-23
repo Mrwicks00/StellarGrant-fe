@@ -175,3 +175,29 @@ pub struct MilestoneSubmission {
     pub description: String,
     pub proof: String,
 }
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchMilestoneVote {
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub approve: bool,
+    pub reason: Option<String>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchItemResult {
+    pub index: u32,
+    pub success: bool,
+    pub error_code: Option<u32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchResult {
+    pub total: u32,
+    pub succeeded: u32,
+    pub failed: u32,
+    pub results: Vec<BatchItemResult>,
+}

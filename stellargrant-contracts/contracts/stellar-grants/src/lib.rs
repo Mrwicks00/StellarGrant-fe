@@ -1,5 +1,6 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
+mod batch;
 mod constants;
 mod events;
 mod governance;
@@ -12,9 +13,9 @@ mod types;
 pub use events::Events;
 pub use storage::Storage;
 pub use types::{
-    ContractError, ContractVersion, EscrowLifecycleState, EscrowMode, EscrowState, Grant, GrantFund,
-    GrantStatus, MigrationRecord, Milestone, MilestoneState, MilestoneSubmission, RegistryEntry,
-    RegistryEntryType,
+    BatchItemResult, BatchMilestoneVote, BatchResult, ContractError, ContractVersion,
+    EscrowLifecycleState, EscrowMode, EscrowState, Grant, GrantFund, GrantStatus, MigrationRecord,
+    Milestone, MilestoneState, MilestoneSubmission, RegistryEntry, RegistryEntryType,
 };
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec};
@@ -480,8 +481,14 @@ impl StellarGrantsContract {
         let mut grant = Storage::get_grant_v(&env, grant_id);
         let mut milestone = Storage::get_milestone_v(&env, grant_id, milestone_idx);
 
-        let result =
-            governance::cast_vote(&env, &mut grant, &mut milestone, &reviewer, approve, feedback)?;
+        let result = governance::cast_vote(
+            &env,
+            &mut grant,
+            &mut milestone,
+            &reviewer,
+            approve,
+            feedback,
+        )?;
 
         Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
 
@@ -737,11 +744,7 @@ impl StellarGrantsContract {
     // ── Global Registry (#520) ──────────────────────────────────────────
 
     /// Paginated list of all registered contributors.
-    pub fn get_contributors_page(
-        env: Env,
-        offset: u32,
-        limit: u32,
-    ) -> Vec<RegistryEntry> {
+    pub fn get_contributors_page(env: Env, offset: u32, limit: u32) -> Vec<RegistryEntry> {
         registry::get_contributors_page(&env, offset, limit)
     }
 
@@ -885,6 +888,37 @@ impl StellarGrantsContract {
             .persistent()
             .set(&storage::DataKey::IdentityOracle, &oracle);
         Ok(())
+    }
+
+    // ── Batch Operations (#526) ─────────────────────────────────────
+
+    /// Vote on multiple milestones in one call. Partial failures are recorded per item.
+    pub fn batch_vote_milestones(
+        env: Env,
+        reviewer: Address,
+        votes: Vec<BatchMilestoneVote>,
+    ) -> Result<BatchResult, ContractError> {
+        batch::batch_vote_milestones(&env, &reviewer, votes)
+    }
+
+    /// Fund multiple grants with the same token in one call. Partial failures are recorded per item.
+    pub fn batch_fund_grants(
+        env: Env,
+        funder: Address,
+        token: Address,
+        items: Vec<(u64, i128)>,
+    ) -> Result<BatchResult, ContractError> {
+        batch::batch_fund_grants(&env, &funder, &token, items)
+    }
+
+    /// Cancel multiple grants. Callable by grant owner or global admin per grant.
+    pub fn batch_cancel_grants(
+        env: Env,
+        caller: Address,
+        grant_ids: Vec<u64>,
+        reason: String,
+    ) -> Result<BatchResult, ContractError> {
+        batch::batch_cancel_grants(&env, &caller, grant_ids, reason)
     }
 
     // ── Bulk Funding (#44) ──────────────────────────────────────────
