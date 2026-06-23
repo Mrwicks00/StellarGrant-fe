@@ -1,15 +1,20 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
+mod constants;
 mod events;
+mod governance;
+mod migration;
 mod reentrancy;
+mod registry;
 mod storage;
 mod types;
 
 pub use events::Events;
 pub use storage::Storage;
 pub use types::{
-    ContractError, EscrowLifecycleState, EscrowMode, EscrowState, Grant, GrantFund, GrantStatus,
-    Milestone, MilestoneState, MilestoneSubmission,
+    ContractError, ContractVersion, EscrowLifecycleState, EscrowMode, EscrowState, Grant, GrantFund,
+    GrantStatus, MigrationRecord, Milestone, MilestoneState, MilestoneSubmission, RegistryEntry,
+    RegistryEntryType,
 };
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec};
@@ -19,8 +24,10 @@ pub struct StellarGrantsContract;
 
 #[contractimpl]
 impl StellarGrantsContract {
-    /// Initialize the contract
-    pub fn initialize(_env: Env) -> Result<(), ContractError> {
+    /// Initialize the contract and record the initial contract version.
+    pub fn initialize(env: Env, deployer: Address) -> Result<(), ContractError> {
+        deployer.require_auth();
+        migration::initialize_version(&env, &deployer, 1, 0, 0)?;
         Ok(())
     }
 
@@ -59,7 +66,7 @@ impl StellarGrantsContract {
             return Err(ContractError::InvalidInput);
         }
 
-        if num_milestones == 0 || num_milestones > 100 {
+        if num_milestones == 0 || num_milestones > constants::MAX_MILESTONES_PER_GRANT {
             return Err(ContractError::InvalidInput);
         }
 
@@ -153,7 +160,7 @@ impl StellarGrantsContract {
         Ok(grant_id)
     }
 
-    /// Register a contributor profile on-chain
+    /// Register a contributor profile on-chain and add to global registry.
     pub fn contributor_register(
         env: Env,
         contributor: Address,
@@ -164,10 +171,10 @@ impl StellarGrantsContract {
     ) -> Result<(), ContractError> {
         contributor.require_auth();
 
-        if name.is_empty() || name.len() > 100 {
+        if name.is_empty() || name.len() > constants::MAX_TITLE_LEN {
             return Err(ContractError::InvalidInput);
         }
-        if bio.len() > 500 {
+        if bio.len() > constants::MAX_BIO_LEN {
             return Err(ContractError::InvalidInput);
         }
 
@@ -188,7 +195,8 @@ impl StellarGrantsContract {
 
         Storage::set_contributor(&env, contributor.clone(), &profile);
 
-        Events::emit_contributor_registered(&env, contributor, name);
+        // Register in global index and emit contributor_registered event
+        registry::register_contributor(&env, &contributor, &name)?;
 
         Ok(())
     }
@@ -225,7 +233,6 @@ impl StellarGrantsContract {
                 return Err(ContractError::InvalidState);
             }
 
-            // Cannot cancel if all milestones are approved/paid out
             if grant.milestones_paid_out >= grant.total_milestones {
                 return Err(ContractError::InvalidState);
             }
@@ -277,7 +284,6 @@ impl StellarGrantsContract {
                 }
             }
 
-            // Update state
             grant.status = GrantStatus::Cancelled;
             grant.escrow_balance = 0;
             grant.reason = Some(reason.clone());
@@ -285,7 +291,6 @@ impl StellarGrantsContract {
 
             Storage::set_grant(&env, grant_id, &grant);
 
-            // Emit cancellation event
             Events::emit_grant_cancelled(&env, grant_id, caller, reason, total_refundable);
 
             Ok(())
@@ -306,7 +311,6 @@ impl StellarGrantsContract {
                 return Err(ContractError::GrantAlreadyReleased);
             }
 
-            // Quorum is interpreted as all milestones approved in current contract design.
             let _ =
                 Self::compute_total_paid_if_quorum_ready(&env, grant_id, grant.total_milestones)?;
             escrow_state.quorum_ready = true;
@@ -316,7 +320,6 @@ impl StellarGrantsContract {
                 return Ok(());
             }
 
-            // High-security grants remain locked until every multisig signer calls sign_release.
             escrow_state.lifecycle = EscrowLifecycleState::AwaitingMultisig;
             Storage::set_escrow_state(&env, grant_id, &escrow_state);
             Ok(())
@@ -463,6 +466,7 @@ impl StellarGrantsContract {
     }
 
     /// Allows authorized reviewers to vote on submitted milestones.
+    /// Delegates all voting logic to governance::cast_vote.
     pub fn milestone_vote(
         env: Env,
         grant_id: u64,
@@ -473,71 +477,15 @@ impl StellarGrantsContract {
     ) -> Result<bool, ContractError> {
         reviewer.require_auth();
 
-        // 1. Validation
-        let grant = Storage::get_grant_v(&env, grant_id);
+        let mut grant = Storage::get_grant_v(&env, grant_id);
         let mut milestone = Storage::get_milestone_v(&env, grant_id, milestone_idx);
 
-        if milestone.state != MilestoneState::Submitted {
-            env.panic_with_error(ContractError::MilestoneNotSubmitted);
-        }
-
-        if !grant.reviewers.contains(reviewer.clone()) {
-            env.panic_with_error(ContractError::Unauthorized);
-        }
-
-        if milestone.votes.contains_key(reviewer.clone()) {
-            env.panic_with_error(ContractError::AlreadyVoted);
-        }
-
-        if let Some(ref fb) = feedback {
-            if fb.len() > 256 {
-                return Err(ContractError::InvalidInput);
-            }
-            milestone.reasons.set(reviewer.clone(), fb.clone());
-        }
-
-        let reputation = Storage::get_reviewer_reputation(&env, reviewer.clone());
-        milestone.votes.set(reviewer.clone(), approve);
-
-        if approve {
-            milestone.approvals += reputation;
-        } else {
-            milestone.rejections += reputation;
-        }
-
-        let mut total_weight: u32 = 0;
-        for r in grant.reviewers.iter() {
-            total_weight += Storage::get_reviewer_reputation(&env, r);
-        }
-
-        let quorum_threshold = (total_weight / 2) + 1;
-        let quorum_reached = milestone.approvals >= quorum_threshold;
-
-        if quorum_reached {
-            milestone.state = MilestoneState::Approved;
-            milestone.status_updated_at = env.ledger().timestamp();
-
-            // Reward harmonious voters who voted approve
-            for (voter, voted_approve) in milestone.votes.iter() {
-                if voted_approve {
-                    let mut rep = Storage::get_reviewer_reputation(&env, voter.clone());
-                    rep += 1;
-                    Storage::set_reviewer_reputation(&env, voter.clone(), rep);
-                }
-            }
-
-            Events::milestone_status_changed(
-                &env,
-                grant_id,
-                milestone_idx,
-                MilestoneState::Approved,
-            );
-        }
+        let result =
+            governance::cast_vote(&env, &mut grant, &mut milestone, &reviewer, approve, feedback)?;
 
         Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
-        Events::milestone_voted(&env, grant_id, milestone_idx, reviewer, approve, feedback);
 
-        Ok(quorum_reached)
+        Ok(result.quorum_reached)
     }
 
     /// Allows authorized reviewers to reject milestones with a reason.
@@ -550,7 +498,6 @@ impl StellarGrantsContract {
     ) -> Result<bool, ContractError> {
         reviewer.require_auth();
 
-        // 1. Validation
         let grant = Storage::get_grant_v(&env, grant_id);
         let mut milestone = Storage::get_milestone_v(&env, grant_id, milestone_idx);
 
@@ -583,7 +530,6 @@ impl StellarGrantsContract {
             milestone.state = MilestoneState::Rejected;
             milestone.status_updated_at = env.ledger().timestamp();
 
-            // Reward harmonious voters who voted reject
             for (voter, voted_approve) in milestone.votes.iter() {
                 if !voted_approve {
                     let mut rep = Storage::get_reviewer_reputation(&env, voter.clone());
@@ -650,7 +596,7 @@ impl StellarGrantsContract {
         if batch_len == 0 {
             return Err(ContractError::BatchEmpty);
         }
-        if batch_len > 20 {
+        if batch_len > constants::MAX_BATCH_SIZE {
             return Err(ContractError::BatchTooLarge);
         }
 
@@ -698,18 +644,15 @@ impl StellarGrantsContract {
                 return Err(ContractError::InvalidState);
             }
 
-            // Perform the token transfer from the funder to the contract
             let token_client = token::Client::new(&env, &grant.token);
             let contract_address = env.current_contract_address();
             token_client.transfer(&funder, &contract_address, &amount);
 
-            // Update escrow balance with overflow protection
             grant.escrow_balance = grant
                 .escrow_balance
                 .checked_add(amount)
                 .ok_or(ContractError::InvalidInput)?;
 
-            // Update funds tracking
             let mut funder_found = false;
             for i in 0..grant.funders.len() {
                 let mut fund_entry = grant.funders.get(i).unwrap();
@@ -767,6 +710,69 @@ impl StellarGrantsContract {
     ) -> Result<soroban_sdk::Map<Address, String>, ContractError> {
         let milestone = Self::get_milestone(env, grant_id, milestone_idx)?;
         Ok(milestone.reasons)
+    }
+
+    // ── Contract Version Query (#527) ───────────────────────────────────
+
+    /// Query the stored contract version.
+    pub fn get_contract_version(env: Env) -> Option<ContractVersion> {
+        migration::get_version(&env)
+    }
+
+    /// Run a versioned schema migration. Admin only.
+    pub fn run_migration(
+        env: Env,
+        admin: Address,
+        target_version: ContractVersion,
+    ) -> Result<MigrationRecord, ContractError> {
+        admin.require_auth();
+        migration::run_migration(&env, &admin, target_version)
+    }
+
+    /// Return the full migration history log.
+    pub fn migration_history(env: Env) -> Vec<MigrationRecord> {
+        migration::migration_history(&env)
+    }
+
+    // ── Global Registry (#520) ──────────────────────────────────────────
+
+    /// Paginated list of all registered contributors.
+    pub fn get_contributors_page(
+        env: Env,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<RegistryEntry> {
+        registry::get_contributors_page(&env, offset, limit)
+    }
+
+    /// Total count of registered contributors.
+    pub fn contributor_count(env: Env) -> u32 {
+        registry::contributor_count(&env)
+    }
+
+    /// Check if an address is on the approved reviewer allowlist.
+    pub fn is_approved_reviewer(env: Env, address: Address) -> bool {
+        registry::is_approved_reviewer(&env, &address)
+    }
+
+    /// Add an address to the approved reviewer allowlist. Admin only.
+    pub fn approve_reviewer(
+        env: Env,
+        admin: Address,
+        reviewer: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        registry::approve_reviewer(&env, &admin, &reviewer)
+    }
+
+    /// Remove an address from the approved reviewer allowlist. Admin only.
+    pub fn revoke_reviewer(
+        env: Env,
+        admin: Address,
+        reviewer: Address,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        registry::revoke_reviewer(&env, &admin, &reviewer)
     }
 
     // ── Reviewer Staking (#42) ──────────────────────────────────────
@@ -895,7 +901,7 @@ impl StellarGrantsContract {
         if batch_len == 0 {
             return Err(ContractError::BatchEmpty);
         }
-        if batch_len > 20 {
+        if batch_len > constants::MAX_BATCH_SIZE {
             return Err(ContractError::BatchTooLarge);
         }
 
