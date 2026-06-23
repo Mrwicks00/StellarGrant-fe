@@ -11,9 +11,9 @@ export default meta;
 type Story = StoryObj<typeof WatchButton>;
 
 export const Unwatched: Story = {
-  args: { grantId: "42", isWatched: false, onToggle: () => {} },
+  args: { grantId: "42" },
 };
 
 export const Watched: Story = {
-  args: { grantId: "42", isWatched: true, onToggle: () => {} },
+  args: { grantId: "42" },
 };
