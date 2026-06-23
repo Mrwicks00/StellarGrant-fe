@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod tests {
+    use crate::constants;
+    use crate::errors::ContractError;
     use crate::storage::Storage;
-    use crate::types::{ContractError, Grant, GrantFund, GrantStatus, Milestone, MilestoneState};
+    use crate::types::{Grant, GrantFund, GrantStatus, Milestone, MilestoneState};
     use crate::StellarGrantsContract;
     use crate::StellarGrantsContractClient;
     use soroban_sdk::{testutils::Address as _, token, Address, Env, Map, String, Vec};
@@ -226,5 +228,67 @@ mod tests {
         let result = client.try_grant_cancel(&grant_id, &wrong_owner, &reason);
 
         assert_eq!(result, Err(Ok(ContractError::Unauthorized.into())));
+    }
+
+    #[test]
+    fn test_grant_fund_zero_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (client, _, contract_id) = setup_test(&env);
+        let owner = Address::generate(&env);
+        let token = Address::generate(&env);
+        let funder = Address::generate(&env);
+        let grant_id = 1u64;
+
+        create_grant(&env, &contract_id, grant_id, owner, token, Vec::new(&env));
+
+        let result = client.try_grant_fund(&grant_id, &funder, &0);
+        assert_eq!(result, Err(Ok(ContractError::ZeroAmount.into())));
+    }
+
+    #[test]
+    fn test_milestone_index_out_of_bounds() {
+        let env = Env::default();
+        let (client, _, contract_id) = setup_test(&env);
+        let grant_id = 1;
+        let owner = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        create_grant(&env, &contract_id, grant_id, owner, token, Vec::new(&env));
+
+        let result = client.try_get_milestone(&grant_id, &5);
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::MilestoneIndexOutOfBounds.into()))
+        );
+    }
+
+    #[test]
+    fn test_grant_create_reviewer_limit_exceeded() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (client, _, _) = setup_test(&env);
+        let owner = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        let mut reviewers = Vec::new(&env);
+        for _ in 0..=constants::MAX_REVIEWERS_PER_GRANT {
+            reviewers.push_back(Address::generate(&env));
+        }
+
+        let result = client.try_grant_create(
+            &owner,
+            &String::from_str(&env, "Title"),
+            &String::from_str(&env, "Description"),
+            &token,
+            &1000,
+            &100,
+            &10,
+            &reviewers,
+        );
+
+        assert_eq!(result, Err(Ok(ContractError::ReviewerLimitExceeded.into())));
     }
 }

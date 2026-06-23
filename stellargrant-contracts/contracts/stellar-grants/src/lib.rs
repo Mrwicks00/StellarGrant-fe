@@ -1,6 +1,7 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 mod constants;
+mod errors;
 mod events;
 mod governance;
 mod migration;
@@ -9,11 +10,12 @@ mod registry;
 mod storage;
 mod types;
 
+pub use errors::ContractError;
 pub use events::Events;
 pub use storage::Storage;
 pub use types::{
-    ContractError, ContractVersion, EscrowLifecycleState, EscrowMode, EscrowState, Grant, GrantFund,
-    GrantStatus, MigrationRecord, Milestone, MilestoneState, MilestoneSubmission, RegistryEntry,
+    ContractVersion, EscrowLifecycleState, EscrowMode, EscrowState, Grant, GrantFund, GrantStatus,
+    MigrationRecord, Milestone, MilestoneState, MilestoneSubmission, RegistryEntry,
     RegistryEntryType,
 };
 
@@ -63,11 +65,15 @@ impl StellarGrantsContract {
         owner.require_auth();
 
         if total_amount <= 0 || milestone_amount <= 0 {
-            return Err(ContractError::InvalidInput);
+            return Err(ContractError::ZeroAmount);
         }
 
         if num_milestones == 0 || num_milestones > constants::MAX_MILESTONES_PER_GRANT {
             return Err(ContractError::InvalidInput);
+        }
+
+        if reviewers.len() > constants::MAX_REVIEWERS_PER_GRANT {
+            return Err(ContractError::ReviewerLimitExceeded);
         }
 
         let total_required = milestone_amount
@@ -480,8 +486,14 @@ impl StellarGrantsContract {
         let mut grant = Storage::get_grant_v(&env, grant_id);
         let mut milestone = Storage::get_milestone_v(&env, grant_id, milestone_idx);
 
-        let result =
-            governance::cast_vote(&env, &mut grant, &mut milestone, &reviewer, approve, feedback)?;
+        let result = governance::cast_vote(
+            &env,
+            &mut grant,
+            &mut milestone,
+            &reviewer,
+            approve,
+            feedback,
+        )?;
 
         Storage::set_milestone(&env, grant_id, milestone_idx, &milestone);
 
@@ -634,7 +646,7 @@ impl StellarGrantsContract {
         funder.require_auth();
         reentrancy::with_non_reentrant(&env, || {
             if amount <= 0 {
-                return Err(ContractError::InvalidInput);
+                return Err(ContractError::ZeroAmount);
             }
 
             let mut grant =
@@ -695,7 +707,7 @@ impl StellarGrantsContract {
         let grant = Storage::get_grant_v(&env, grant_id);
 
         if milestone_idx >= grant.total_milestones {
-            env.panic_with_error(ContractError::InvalidInput);
+            env.panic_with_error(ContractError::MilestoneIndexOutOfBounds);
         }
 
         let milestone = Storage::get_milestone_v(&env, grant_id, milestone_idx);
@@ -737,11 +749,7 @@ impl StellarGrantsContract {
     // ── Global Registry (#520) ──────────────────────────────────────────
 
     /// Paginated list of all registered contributors.
-    pub fn get_contributors_page(
-        env: Env,
-        offset: u32,
-        limit: u32,
-    ) -> Vec<RegistryEntry> {
+    pub fn get_contributors_page(env: Env, offset: u32, limit: u32) -> Vec<RegistryEntry> {
         registry::get_contributors_page(&env, offset, limit)
     }
 
@@ -908,7 +916,7 @@ impl StellarGrantsContract {
         for item in grants.iter() {
             let (grant_id, amount) = item;
             if amount <= 0 {
-                return Err(ContractError::InvalidInput);
+                return Err(ContractError::ZeroAmount);
             }
 
             let mut grant =
@@ -966,7 +974,7 @@ fn apply_milestone_submission(
     proof_url: String,
 ) -> Result<(), ContractError> {
     if milestone_idx >= grant.total_milestones {
-        return Err(ContractError::InvalidInput);
+        return Err(ContractError::MilestoneIndexOutOfBounds);
     }
 
     if let Some(existing) = Storage::get_milestone(env, grant_id, milestone_idx) {
