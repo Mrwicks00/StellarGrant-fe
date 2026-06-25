@@ -1,5 +1,7 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
+mod access_control;
+mod analytics;
 mod audit;
 mod checklist;
 mod circuit_breaker;
@@ -20,12 +22,14 @@ mod grant_tags;
 mod hooks;
 mod insurance;
 mod interfaces;
+mod invoice;
 pub mod merkle;
 mod metrics;
 mod migration;
 mod multisig;
 mod oracle;
 mod pagination;
+mod params;
 mod quadratic;
 mod rate_limit;
 mod reentrancy;
@@ -43,19 +47,20 @@ pub use errors::ContractError;
 pub use events::Events;
 pub use storage::Storage;
 pub use types::{
-    AcceptanceCriteria, AuditAction, AuditEntry, BreakerState, ChecklistSubmission,
-    ComplianceAttestation, ComplianceLevel, ComplianceStatus, ContractVersion, CriterionStatus,
-    DexConfig, Dispute, DisputeStatus, EscrowAccount, EscrowLifecycleState, EscrowMode, EscrowState,
-    FeeRecord, FunderLedger, Grant, GrantArchetype, GrantCategory, GrantFund, GrantStatus,
-    GrantTag, GrantTemplate, HookCallResult, HookEvent, HookRegistration, InsuranceClaim,
-    InsurancePolicy, MerkleCommitment, MerkleProof, MigrationRecord, Milestone, MilestoneState,
-    MilestoneSubmission, MultisigProposal, MultisigSigner, OracleConfig, PauseRecord,
-    PaymentStream, PriceQuote, ProtocolConfig, ProtocolMetrics, ProtocolModule,
-    QuadraticVoteRecord, RateLimitAction, RegistryEntry, RegistryEntryType, RelayableAction,
-    RelayAllowance, RelayConfig, RelayRecord, RenewalProposal, RenewalStatus, ReputationTier,
-    ReviewerAvailability, ReviewerProfile, ReviewerRequest, ReviewerRequestStatus, ScoreResult,
-    ScoringDimension, ScoringRubric, ScoringWeight, SignatureStatus, SwapResult, SwapRoute,
-    TokenMetric, VoiceCredits, VotingMechanism,
+    AcceptanceCriteria, AnalyticsSnapshot, AuditAction, AuditEntry, BreakerState, CategoryStats,
+    ChecklistSubmission, ComplianceAttestation, ComplianceLevel, ComplianceStatus, ContractVersion,
+    CriterionStatus, DexConfig, Dispute, DisputeStatus, EscrowAccount, EscrowLifecycleState,
+    EscrowMode, EscrowState, FeeRecord, FunderLedger, Grant, GrantArchetype, GrantCategory,
+    GrantFund, GrantStatus, GrantTag, GrantTemplate, HookCallResult, HookEvent, HookRegistration,
+    InsuranceClaim, InsurancePolicy, Invoice, InvoiceStatus, LineItem, MerkleCommitment,
+    MerkleProof, MigrationRecord, Milestone, MilestoneState, MilestoneSubmission, MultisigProposal,
+    MultisigSigner, OracleConfig, ParamRecord, ParamType, ParamValue, PauseRecord, PaymentStream,
+    PriceQuote, ProtocolConfig, ProtocolMetrics, ProtocolModule, QuadraticVoteRecord,
+    RateLimitAction, RegistryEntry, RegistryEntryType, RelayableAction, RelayAllowance,
+    RelayConfig, RelayRecord, RenewalProposal, RenewalStatus, ReputationTier, ReviewerAvailability,
+    ReviewerProfile, ReviewerRequest, ReviewerRequestStatus, Role, RoleAssignment, RollingWindow,
+    ScoreResult, ScoringDimension, ScoringRubric, ScoringWeight, SignatureStatus, SwapResult,
+    SwapRoute, TokenMetric, VoiceCredits, VotingMechanism,
 };
 
 use metrics::MetricField;
@@ -2015,6 +2020,205 @@ impl StellarGrantsContract {
 
     pub fn breaker_auto_reset_expired(env: Env) -> u32 {
         circuit_breaker::auto_reset_expired(&env)
+    }
+
+    // ── Issue #566: Invoice-Style Milestone Billing Entry Points ─────────────
+
+    /// Submit an invoice for a milestone. Contributor only.
+    pub fn invoice_submit(
+        env: Env,
+        contributor: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+        invoice_number: String,
+        line_items: Vec<LineItem>,
+        tax_bps: u32,
+        notes: Option<String>,
+    ) -> Result<(), ContractError> {
+        emergency::require_not_paused(&env)?;
+        invoice::submit_invoice(
+            &env,
+            &contributor,
+            grant_id,
+            milestone_idx,
+            invoice_number,
+            line_items,
+            tax_bps,
+            notes,
+        )
+    }
+
+    /// Approve an invoice. Reviewer only. Triggers milestone approval.
+    pub fn invoice_approve(
+        env: Env,
+        reviewer: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+    ) -> Result<(), ContractError> {
+        emergency::require_not_paused(&env)?;
+        invoice::approve_invoice(&env, &reviewer, grant_id, milestone_idx)
+    }
+
+    /// Reject an invoice with a reason. Reviewer only.
+    pub fn invoice_reject(
+        env: Env,
+        reviewer: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+        reason: String,
+    ) -> Result<(), ContractError> {
+        emergency::require_not_paused(&env)?;
+        invoice::reject_invoice(&env, &reviewer, grant_id, milestone_idx, reason)
+    }
+
+    /// Resubmit a rejected invoice with corrections.
+    pub fn invoice_resubmit(
+        env: Env,
+        contributor: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+        updated_items: Vec<LineItem>,
+    ) -> Result<(), ContractError> {
+        emergency::require_not_paused(&env)?;
+        invoice::resubmit_invoice(&env, &contributor, grant_id, milestone_idx, updated_items)
+    }
+
+    /// Return the invoice for a milestone.
+    pub fn invoice_get(env: Env, grant_id: u64, milestone_idx: u32) -> Option<Invoice> {
+        invoice::get_invoice(&env, grant_id, milestone_idx)
+    }
+
+    // ── Issue #582: Advanced Protocol Analytics Entry Points ─────────────────
+
+    /// Record a data point in a rolling window.
+    pub fn analytics_record(env: Env, metric: soroban_sdk::Symbol, value: i128) {
+        analytics::record(&env, metric, value);
+    }
+
+    /// Compute the rolling average for a metric.
+    pub fn analytics_rolling_average(env: Env, metric: soroban_sdk::Symbol) -> Option<i128> {
+        analytics::rolling_average(&env, metric)
+    }
+
+    /// Compute stats for a grant category.
+    pub fn analytics_category_stats(env: Env, category_id: u32) -> CategoryStats {
+        analytics::category_stats(&env, category_id)
+    }
+
+    /// Build and cache the full analytics snapshot.
+    pub fn analytics_build_snapshot(env: Env) -> AnalyticsSnapshot {
+        analytics::build_snapshot(&env)
+    }
+
+    /// Return the latest cached snapshot.
+    pub fn analytics_get_snapshot(env: Env) -> Option<AnalyticsSnapshot> {
+        analytics::get_snapshot(&env)
+    }
+
+    /// Return the raw rolling window for a metric.
+    pub fn analytics_get_window(env: Env, metric: soroban_sdk::Symbol) -> Option<RollingWindow> {
+        analytics::get_window(&env, metric)
+    }
+
+    // ── Issue #596: Dynamic On-Chain Protocol Parameter Store Entry Points ───
+
+    /// Set a parameter directly. Admin only for non-DAO params; DAO vote required for others.
+    pub fn param_set(
+        env: Env,
+        caller: Address,
+        key: soroban_sdk::Symbol,
+        value: ParamValue,
+        description: soroban_sdk::String,
+        requires_dao: bool,
+    ) -> Result<(), ContractError> {
+        params::set_param(&env, &caller, key, value, description, requires_dao)
+    }
+
+    /// Get a parameter value by key.
+    pub fn param_get(env: Env, key: soroban_sdk::Symbol) -> Option<ParamRecord> {
+        params::get_param(&env, &key)
+    }
+
+    /// Get a u32 param or return a default value.
+    pub fn param_get_u32(env: Env, key: soroban_sdk::Symbol, default: u32) -> u32 {
+        params::get_u32(&env, &key, default)
+    }
+
+    /// Get an i128 param or return a default value.
+    pub fn param_get_i128(env: Env, key: soroban_sdk::Symbol, default: i128) -> i128 {
+        params::get_i128(&env, &key, default)
+    }
+
+    /// Get a bool param or return a default value.
+    pub fn param_get_bool(env: Env, key: soroban_sdk::Symbol, default: bool) -> bool {
+        params::get_bool(&env, &key, default)
+    }
+
+    /// Return all registered param keys.
+    pub fn param_list(env: Env) -> Vec<soroban_sdk::Symbol> {
+        params::list_params(&env)
+    }
+
+    /// Return the change history for a param (last 20 changes).
+    pub fn param_history(env: Env, key: soroban_sdk::Symbol) -> Vec<ParamRecord> {
+        params::param_history(&env, &key)
+    }
+
+    // ── Issue #593: Role-Based Access Control (RBAC) Entry Points ────────────
+
+    /// Grant a role to an address. SuperAdmin only (or ProtocolAdmin for lesser roles).
+    pub fn rbac_grant_role(
+        env: Env,
+        granter: Address,
+        grantee: Address,
+        role: Role,
+        expires_at: Option<u64>,
+    ) -> Result<(), ContractError> {
+        access_control::grant_role(&env, &granter, &grantee, role, expires_at)
+    }
+
+    /// Revoke a role. SuperAdmin or ProtocolAdmin.
+    pub fn rbac_revoke_role(
+        env: Env,
+        revoker: Address,
+        holder: Address,
+        role: Role,
+    ) -> Result<(), ContractError> {
+        access_control::revoke_role(&env, &revoker, &holder, role)
+    }
+
+    /// Check if an address holds a specific role (respects expiry).
+    pub fn rbac_has_role(env: Env, address: Address, role: Role) -> bool {
+        access_control::has_role(&env, &address, role)
+    }
+
+    /// Assert that an address holds a role; return Err(Unauthorized) if not.
+    pub fn rbac_require_role(env: Env, address: Address, role: Role) -> Result<(), ContractError> {
+        access_control::require_role(&env, &address, role)
+    }
+
+    /// Assert any of a list of roles (OR logic). Returns Ok if holder has at least one.
+    pub fn rbac_require_any_role(
+        env: Env,
+        address: Address,
+        roles: Vec<Role>,
+    ) -> Result<(), ContractError> {
+        access_control::require_any_role(&env, &address, roles)
+    }
+
+    /// Return all addresses holding a specific role.
+    pub fn rbac_role_members(env: Env, role: Role) -> Vec<Address> {
+        access_control::role_members(&env, role)
+    }
+
+    /// Return all roles held by an address.
+    pub fn rbac_roles_of(env: Env, address: Address) -> Vec<Role> {
+        access_control::roles_of(&env, &address)
+    }
+
+    /// Renounce your own role (voluntary self-removal).
+    pub fn rbac_renounce_role(env: Env, holder: Address, role: Role) -> Result<(), ContractError> {
+        access_control::renounce_role(&env, &holder, role)
     }
 
     // ── Private Helpers ───────────────────────────────────────────────────────

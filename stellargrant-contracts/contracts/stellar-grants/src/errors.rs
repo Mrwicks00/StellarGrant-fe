@@ -99,4 +99,7 @@ pub enum ContractError {
     // Circuit Breaker (#594)
     ModuleTripped = 80,
     BreakerNotTripped = 81,
+    // Invoice (#566)
+    InvoiceNotFound = 82,
+    InvoiceAlreadySubmitted = 83,
 }

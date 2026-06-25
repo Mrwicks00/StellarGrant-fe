@@ -1015,3 +1015,141 @@ pub struct RateLimitRecord {
     pub window_duration: u64,
     pub max_per_window: u32,
 }
+
+// ── Issue #566: Invoice-Style Milestone Billing ───────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum InvoiceStatus {
+    Draft = 0,
+    Submitted = 1,
+    Approved = 2,
+    Rejected = 3,
+    Paid = 4,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineItem {
+    pub description: soroban_sdk::String,
+    pub quantity: u32,
+    pub unit_price: i128,
+    pub total: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Invoice {
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub invoice_number: soroban_sdk::String,
+    pub contributor: Address,
+    pub line_items: soroban_sdk::Vec<LineItem>,
+    pub subtotal: i128,
+    pub tax_bps: u32,
+    pub total: i128,
+    pub currency_token: Address,
+    pub status: InvoiceStatus,
+    pub submitted_at: u64,
+    pub approved_at: Option<u64>,
+    pub notes: Option<soroban_sdk::String>,
+}
+
+// ── Issue #582: Advanced Protocol Analytics ───────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RollingWindow {
+    pub metric_key: soroban_sdk::Symbol,
+    pub window_size: u32,
+    pub values: soroban_sdk::Vec<i128>,
+    pub timestamps: soroban_sdk::Vec<u64>,
+    pub sum: i128,
+    pub count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CategoryStats {
+    pub category_id: u32,
+    pub total_grants: u32,
+    pub completed_grants: u32,
+    pub total_funded: i128,
+    pub avg_completion_ledgers: u32,
+    pub success_rate_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnalyticsSnapshot {
+    pub avg_milestone_completion_ledgers: u32,
+    pub avg_reviewer_turnaround_ledgers: u32,
+    pub overall_success_rate_bps: u32,
+    pub top_category_id: Option<u32>,
+    pub tvl_7day_growth_bps: i32,
+    pub snapshot_at: u64,
+}
+
+// ── Issue #596: Dynamic On-Chain Protocol Parameter Store ─────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ParamType {
+    U32 = 0,
+    I128 = 1,
+    Bool = 2,
+    Address = 3,
+    StringValue = 4,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParamValue {
+    pub param_type: ParamType,
+    pub u32_val: Option<u32>,
+    pub i128_val: Option<i128>,
+    pub bool_val: Option<bool>,
+    pub address_val: Option<Address>,
+    pub string_val: Option<soroban_sdk::String>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParamRecord {
+    pub key: soroban_sdk::Symbol,
+    pub value: ParamValue,
+    pub set_by: Address,
+    pub set_at: u64,
+    pub description: soroban_sdk::String,
+    pub requires_dao_vote: bool,
+}
+
+// ── Issue #593: Role-Based Access Control (RBAC) Framework ────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Role {
+    SuperAdmin = 0,
+    ProtocolAdmin = 1,
+    TreasuryManager = 2,
+    ComplianceOfficer = 3,
+    DisputeArbiter = 4,
+    OracleOperator = 5,
+    ReviewerModerator = 6,
+    EmergencyPauser = 7,
+    Relayer = 8,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoleAssignment {
+    pub holder: Address,
+    pub role: Role,
+    pub granted_by: Address,
+    pub granted_at: u64,
+    pub expires_at: Option<u64>,
+    pub is_active: bool,
+}

@@ -923,3 +923,167 @@ pub struct ComplianceRevoked {
     pub revoked_by: Address,
     pub timestamp: u64,
 }
+
+// ── Issue #566: Invoice events ────────────────────────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvoiceSubmitted {
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub invoice_number: String,
+    pub total: i128,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvoiceApproved {
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub approved_by: Address,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvoiceRejected {
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub rejected_by: Address,
+    pub reason: String,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvoiceResubmitted {
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub total: i128,
+    pub timestamp: u64,
+}
+
+// ── Issue #593: RBAC events ───────────────────────────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoleGranted {
+    pub holder: Address,
+    pub role: u32,
+    pub granted_by: Address,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoleRevoked {
+    pub holder: Address,
+    pub role: u32,
+    pub revoked_by: Address,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoleRenounced {
+    pub holder: Address,
+    pub role: u32,
+    pub timestamp: u64,
+}
+
+impl Events {
+    // ... existing methods ...
+
+    // ── Invoice event emitters ────────────────────────────────────────────────
+
+    pub fn invoice_submitted(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        invoice_number: String,
+        total: i128,
+    ) {
+        let event = InvoiceSubmitted {
+            grant_id,
+            milestone_idx,
+            invoice_number,
+            total,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn invoice_approved(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        approved_by: Address,
+    ) {
+        let event = InvoiceApproved {
+            grant_id,
+            milestone_idx,
+            approved_by,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn invoice_rejected(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        rejected_by: Address,
+        reason: String,
+    ) {
+        let event = InvoiceRejected {
+            grant_id,
+            milestone_idx,
+            rejected_by,
+            reason,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn invoice_resubmitted(env: &Env, grant_id: u64, milestone_idx: u32, total: i128) {
+        let event = InvoiceResubmitted {
+            grant_id,
+            milestone_idx,
+            total,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    // ── RBAC event emitters ───────────────────────────────────────────────────
+
+    pub fn role_granted(env: &Env, holder: Address, role: crate::types::Role, granted_by: Address) {
+        let event = RoleGranted {
+            holder,
+            role: role as u32,
+            granted_by,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn role_revoked(env: &Env, holder: Address, role: crate::types::Role, revoked_by: Address) {
+        let event = RoleRevoked {
+            holder,
+            role: role as u32,
+            revoked_by,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn role_renounced(env: &Env, holder: Address, role: crate::types::Role) {
+        let event = RoleRenounced {
+            holder,
+            role: role as u32,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+}

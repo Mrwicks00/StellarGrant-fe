@@ -1,13 +1,13 @@
 use crate::types::{
-    AcceptanceCriteria, AuditEntry, BreakerState, ChecklistSubmission, ComplianceAttestation,
+    AcceptanceCriteria, AnalyticsSnapshot, AuditEntry, BreakerState, CategoryStats, ChecklistSubmission, ComplianceAttestation,
     ContractError, ContractVersion, ContributorProfile, DexConfig, Dispute, EscrowAccount,
     EscrowState, FunderLedger, Grant, GrantCategory, GrantTag, HookEvent, HookRegistration,
-    InsuranceClaim, InsurancePolicy, MerkleCommitment, MigrationRecord, Milestone,
-    MultisigProposal, OracleConfig, PauseRecord, PaymentStream, ProtocolConfig, ProtocolMetrics,
+    InsuranceClaim, InsurancePolicy, Invoice, MerkleCommitment, MigrationRecord, Milestone,
+    MultisigProposal, OracleConfig, ParamRecord, PauseRecord, PaymentStream, ProtocolConfig, ProtocolMetrics,
     ProtocolModule, QuadraticVoteRecord, RateLimitAction, RateLimitRecord, RegistryEntry, RelayAllowance, RelayConfig, RenewalProposal,
-    ReviewerProfile, ReviewerRequest, ScoringRubric, TokenMetric, VoiceCredits, VotingMechanism,
+    ReviewerProfile, ReviewerRequest, Role, RoleAssignment, RollingWindow, ScoringRubric, TokenMetric, VoiceCredits, VotingMechanism,
 };
-use soroban_sdk::{contracttype, Address, Env, Vec};
+use soroban_sdk::{contracttype, Address, Env, Symbol, Vec};
 
 #[contracttype]
 pub enum DataKey {
@@ -102,6 +102,18 @@ pub enum DataKey {
     MerkleCommitment(u64, u32),
     // Issue #544: per-address rate limits
     RateLimit(Address, RateLimitAction),
+    // Issue #566: invoice billing
+    Invoice(u64, u32),
+    // Issue #582: analytics
+    RollingWindow(Symbol),
+    AnalyticsSnapshot,
+    // Issue #596: dynamic params
+    Param(Symbol),
+    ParamHistory(Symbol),
+    ParamKeys,
+    // Issue #593: RBAC
+    RoleAssignment(Address, Role),
+    RoleMembers(Role),
 }
 
 const PERSISTENT_TTL_THRESHOLD: u32 = 100_000;
@@ -1015,6 +1027,113 @@ impl Storage {
     ) {
         let key = DataKey::RateLimit(address.clone(), action.clone());
         env.storage().persistent().set(&key, record);
+        Self::bump_persistent_ttl(env, &key);
+    }
+}
+
+    // ── Issue #566: Invoice Billing ─────────────────────────────────────────────
+
+    pub fn get_invoice(env: &Env, grant_id: u64, milestone_idx: u32) -> Option<Invoice> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Invoice(grant_id, milestone_idx))
+    }
+
+    pub fn set_invoice(env: &Env, grant_id: u64, milestone_idx: u32, invoice: &Invoice) {
+        let key = DataKey::Invoice(grant_id, milestone_idx);
+        env.storage().persistent().set(&key, invoice);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    // ── Issue #582: Analytics ────────────────────────────────────────────────────
+
+    pub fn get_rolling_window(env: &Env, metric: &Symbol) -> Option<RollingWindow> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RollingWindow(metric.clone()))
+    }
+
+    pub fn set_rolling_window(env: &Env, metric: &Symbol, window: &RollingWindow) {
+        let key = DataKey::RollingWindow(metric.clone());
+        env.storage().persistent().set(&key, window);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    pub fn get_analytics_snapshot(env: &Env) -> Option<AnalyticsSnapshot> {
+        env.storage().persistent().get(&DataKey::AnalyticsSnapshot)
+    }
+
+    pub fn set_analytics_snapshot(env: &Env, snapshot: &AnalyticsSnapshot) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::AnalyticsSnapshot, snapshot);
+    }
+
+    // ── Issue #596: Dynamic Params ────────────────────────────────────────────────
+
+    pub fn get_param(env: &Env, key: &Symbol) -> Option<ParamRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Param(key.clone()))
+    }
+
+    pub fn set_param(env: &Env, key: &Symbol, record: &ParamRecord) {
+        let data_key = DataKey::Param(key.clone());
+        env.storage().persistent().set(&data_key, record);
+        Self::bump_persistent_ttl(env, &data_key);
+
+        // Add to param keys list if not exists
+        let mut keys = Self::list_param_keys(env);
+        if !keys.contains(key.clone()) {
+            keys.push_back(key.clone());
+            env.storage().persistent().set(&DataKey::ParamKeys, &keys);
+        }
+    }
+
+    pub fn get_param_history(env: &Env, key: &Symbol) -> Vec<ParamRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ParamHistory(key.clone()))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn set_param_history(env: &Env, key: &Symbol, history: &Vec<ParamRecord>) {
+        let data_key = DataKey::ParamHistory(key.clone());
+        env.storage().persistent().set(&data_key, history);
+        Self::bump_persistent_ttl(env, &data_key);
+    }
+
+    pub fn list_param_keys(env: &Env) -> Vec<Symbol> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ParamKeys)
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    // ── Issue #593: RBAC ──────────────────────────────────────────────────────────
+
+    pub fn get_role_assignment(env: &Env, address: &Address, role: &Role) -> Option<RoleAssignment> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RoleAssignment(address.clone(), role.clone()))
+    }
+
+    pub fn set_role_assignment(env: &Env, address: &Address, role: &Role, assignment: &RoleAssignment) {
+        let key = DataKey::RoleAssignment(address.clone(), role.clone());
+        env.storage().persistent().set(&key, assignment);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    pub fn get_role_members(env: &Env, role: &Role) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RoleMembers(role.clone()))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn set_role_members(env: &Env, role: &Role, members: &Vec<Address>) {
+        let key = DataKey::RoleMembers(role.clone());
+        env.storage().persistent().set(&key, members);
         Self::bump_persistent_ttl(env, &key);
     }
 }
