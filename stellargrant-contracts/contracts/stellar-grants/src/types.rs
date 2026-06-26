@@ -1266,6 +1266,106 @@ pub struct StructuredEvidence {
     pub submitted_at: u64,
 }
 
+// ── Issue #590: Public Crowdsourced Review Module ────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum PublicReviewSignal {
+    Positive = 0,
+    Neutral = 1,
+    Negative = 2,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicReview {
+    pub reviewer: Address,
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub signal: PublicReviewSignal,
+    pub comment: String,
+    pub reviewer_reputation: u32,
+    pub submitted_at: u64,
+    pub helpful_votes: u32,
+}
+
+// ── Issue #595: Milestone Dependency Graph ────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MilestoneDependency {
+    pub milestone_idx: u32,
+    pub depends_on: Vec<u32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MilestoneDag {
+    pub grant_id: u64,
+    pub dependencies: Vec<MilestoneDependency>,
+    pub is_valid: bool,
+}
+
+// ── Issue #565: Contributor Public Portfolio ──────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GrantSummary {
+    pub grant_id: u64,
+    pub title: String,
+    pub milestones_completed: u32,
+    pub total_milestones: u32,
+    pub total_earned: i128,
+    pub token: Address,
+    pub completed_at: Option<u64>,
+    pub status: GrantStatus,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContributorPortfolio {
+    pub contributor: Address,
+    pub display_name: String,
+    pub bio: String,
+    pub reputation_score: u32,
+    pub reputation_tier: ReputationTier,
+    pub total_earned_usd_equivalent: Option<i128>,
+    pub grants_completed: u32,
+    pub grants_active: u32,
+    pub milestones_approved: u32,
+    pub milestones_rejected: u32,
+    pub badges: Vec<BadgeType>,
+    pub recent_grants: Vec<GrantSummary>,
+    pub member_since: u64,
+}
+
+// ── Issue #570: NFT Certificate per Approved Milestone ───────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NftMetadata {
+    pub name: String,
+    pub description: String,
+    pub grant_title: String,
+    pub image_uri: String,
+    pub attributes: Vec<(String, String)>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MilestoneNft {
+    pub token_id: u32,
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub owner: Address,
+    pub minted_at: u64,
+    pub minted_at_ledger: u32,
+    pub metadata: NftMetadata,
+    pub is_transferable: bool,
+    pub proof_hash: Bytes,
+}
+
 // ── Crowdfund Module ──────────────────────────────────────────────────────────
 
 #[contracttype]
