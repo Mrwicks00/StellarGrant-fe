@@ -1225,3 +1225,106 @@ pub struct CrowdfundCancelled {
     pub total_pledged: i128,
     pub timestamp: u64,
 }
+
+// ── Issue #590: Public review events ─────────────────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublicReviewSubmitted {
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub reviewer: Address,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewMarkedHelpful {
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub reviewer: Address,
+    pub voter: Address,
+    pub timestamp: u64,
+}
+
+// ── Issue #570: Milestone NFT events ─────────────────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NftMinted {
+    pub token_id: u32,
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub owner: Address,
+    pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NftTransferred {
+    pub token_id: u32,
+    pub from: Address,
+    pub to: Address,
+    pub timestamp: u64,
+}
+
+impl Events {
+    pub fn emit_public_review_submitted(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        reviewer: Address,
+    ) {
+        let event = PublicReviewSubmitted {
+            grant_id,
+            milestone_idx,
+            reviewer,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn emit_review_marked_helpful(
+        env: &Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        reviewer: Address,
+        voter: Address,
+    ) {
+        let event = ReviewMarkedHelpful {
+            grant_id,
+            milestone_idx,
+            reviewer,
+            voter,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn emit_nft_minted(
+        env: &Env,
+        token_id: u32,
+        grant_id: u64,
+        milestone_idx: u32,
+        owner: Address,
+    ) {
+        let event = NftMinted {
+            token_id,
+            grant_id,
+            milestone_idx,
+            owner,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+
+    pub fn emit_nft_transferred(env: &Env, token_id: u32, from: Address, to: Address) {
+        let event = NftTransferred {
+            token_id,
+            from,
+            to,
+            timestamp: env.ledger().timestamp(),
+        };
+        event.publish(env);
+    }
+}
