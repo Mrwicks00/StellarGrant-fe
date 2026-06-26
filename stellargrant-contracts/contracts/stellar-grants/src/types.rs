@@ -1207,6 +1207,83 @@ pub struct PaymentSplit {
     pub registered_at: u64,
 }
 
+// ── Issue #578: Cross-Protocol Grant Syndication ─────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum SyndicateStatus {
+    Forming = 0,
+    Active = 1,
+    Closed = 2,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyndicateMember {
+    pub member: Address,
+    pub committed_amount: i128,
+    pub deposited_amount: i128,
+    pub share_bps: u32,
+    pub is_lead: bool,
+    pub joined_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyndicateGrant {
+    pub grant_id: u64,
+    pub lead: Address,
+    pub target_total: i128,
+    pub token: Address,
+    pub status: SyndicateStatus,
+    pub member_count: u32,
+    pub min_commitment: i128,
+    pub max_members: u32,
+    pub formation_deadline: u64,
+}
+
+// ── Issue #591: Grant Specification Versioning ───────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum AmendmentStatus {
+    Proposed = 0,
+    Approved = 1,
+    Rejected = 2,
+    Withdrawn = 3,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Amendment {
+    pub grant_id: u64,
+    pub version: u32,
+    pub proposed_by: Address,
+    pub changed_fields: Vec<String>,
+    pub previous_values: Vec<String>,
+    pub new_values: Vec<String>,
+    pub rationale: String,
+    pub status: AmendmentStatus,
+    pub reviewer_votes: Map<Address, bool>,
+    pub proposed_at: u64,
+    pub resolved_at: Option<u64>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GrantVersion {
+    pub grant_id: u64,
+    pub version: u32,
+    pub title: String,
+    pub description: String,
+    pub total_amount: i128,
+    pub total_milestones: u32,
+    pub created_at: u64,
+    pub amendment_id: Option<u32>,
+}
+
 // ── Issue #568: Grant Ownership and Role Transfer ─────────────────────────────
 
 #[contracttype]

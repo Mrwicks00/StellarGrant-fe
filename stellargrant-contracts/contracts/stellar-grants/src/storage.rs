@@ -1,13 +1,13 @@
 use crate::types::{
-    AcceptanceCriteria, AnalyticsSnapshot, AuditEntry, BreakerState, CategoryStats, ChecklistSubmission, ComplianceAttestation,
+    AcceptanceCriteria, Amendment, AnalyticsSnapshot, AuditEntry, BreakerState, CategoryStats, ChecklistSubmission, ComplianceAttestation,
     ContractError, ContractVersion, ContributorProfile, CrowdfundCampaign, CrowdfundPledge, DexConfig, Dispute, EscrowAccount,
-    EscrowState, EvidenceSchema, FunderLedger, Grant, GrantCategory, GrantTag, HookEvent, HookRegistration,
+    EscrowState, EvidenceSchema, FunderLedger, Grant, GrantCategory, GrantTag, GrantVersion, HookEvent, HookRegistration,
     InsuranceClaim, InsurancePolicy, Invoice, LicenseRecord, MerkleCommitment, MigrationRecord, Milestone,
     MilestoneDag, MilestoneNft, MultisigProposal, OracleConfig, ParamRecord, PauseRecord, PaymentSplit, PaymentStream,
     ProtocolConfig, ProtocolMetrics, ProtocolModule, PublicReview, QuadraticVoteRecord,
     RateLimitAction, RateLimitRecord, RegistryEntry, RelayAllowance, RelayConfig, RenewalProposal,
-    ReviewerProfile, ReviewerRequest, Role, RoleAssignment, RollingWindow, ScoringRubric, StructuredEvidence, TokenMetric,
-    TransferProposal, VoiceCredits, VotingMechanism,
+    ReviewerProfile, ReviewerRequest, Role, RoleAssignment, RollingWindow, ScoringRubric, StructuredEvidence, SyndicateGrant,
+    SyndicateMember, TokenMetric, TransferProposal, VoiceCredits, VotingMechanism,
 };
 use soroban_sdk::{contracttype, Address, Env, Symbol, Vec};
 
@@ -125,6 +125,16 @@ pub enum DataKey {
     LicenseRecord(u64, u32),
     // Issue #592: Multi-Recipient Payment Splitting
     PaymentSplit(u64, u32),
+    // Issue #578: Cross-protocol syndication
+    SyndicateGrant(u64),
+    SyndicateMember(u64, Address),
+    SyndicateMembers(u64),
+    SyndicatePayouts(u64, u32),
+    // Issue #591: Grant specification versioning
+    GrantVersion(u64, u32),
+    CurrentVersion(u64),
+    Amendment(u64, u32),
+    AmendmentHistory(u64),
     // Issue #568: Grant Transfer
     TransferProposal(u64),
     // Issue #583: Typed Evidence Schemas
@@ -1259,6 +1269,115 @@ impl Storage {
     pub fn set_payment_split(env: &Env, grant_id: u64, milestone_idx: u32, split: &PaymentSplit) {
         let key = DataKey::PaymentSplit(grant_id, milestone_idx);
         env.storage().persistent().set(&key, split);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    // ── Issue #578: Cross-Protocol Grant Syndication ─────────────────────────
+
+    pub fn get_syndicate_grant(env: &Env, grant_id: u64) -> Option<SyndicateGrant> {
+        let key = DataKey::SyndicateGrant(grant_id);
+        let v = env.storage().persistent().get(&key);
+        if v.is_some() {
+            Self::bump_persistent_ttl(env, &key);
+        }
+        v
+    }
+
+    pub fn set_syndicate_grant(env: &Env, grant_id: u64, syndicate: &SyndicateGrant) {
+        let key = DataKey::SyndicateGrant(grant_id);
+        env.storage().persistent().set(&key, syndicate);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    pub fn get_syndicate_member(env: &Env, grant_id: u64, member: &Address) -> Option<SyndicateMember> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SyndicateMember(grant_id, member.clone()))
+    }
+
+    pub fn set_syndicate_member(env: &Env, grant_id: u64, member: &Address, record: &SyndicateMember) {
+        let key = DataKey::SyndicateMember(grant_id, member.clone());
+        env.storage().persistent().set(&key, record);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    pub fn remove_syndicate_member(env: &Env, grant_id: u64, member: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::SyndicateMember(grant_id, member.clone()));
+    }
+
+    pub fn get_syndicate_member_index(env: &Env, grant_id: u64) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SyndicateMembers(grant_id))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn set_syndicate_member_index(env: &Env, grant_id: u64, members: &Vec<Address>) {
+        let key = DataKey::SyndicateMembers(grant_id);
+        env.storage().persistent().set(&key, members);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    pub fn set_syndicate_payouts(env: &Env, grant_id: u64, milestone_idx: u32, payouts: &Vec<(Address, i128)>) {
+        let key = DataKey::SyndicatePayouts(grant_id, milestone_idx);
+        env.storage().persistent().set(&key, payouts);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    // ── Issue #591: Grant Specification Versioning ───────────────────────────
+
+    pub fn get_grant_version(env: &Env, grant_id: u64, version: u32) -> Option<GrantVersion> {
+        let key = DataKey::GrantVersion(grant_id, version);
+        let v = env.storage().persistent().get(&key);
+        if v.is_some() {
+            Self::bump_persistent_ttl(env, &key);
+        }
+        v
+    }
+
+    pub fn set_grant_version(env: &Env, grant_id: u64, version: u32, snapshot: &GrantVersion) {
+        let key = DataKey::GrantVersion(grant_id, version);
+        env.storage().persistent().set(&key, snapshot);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    pub fn get_current_version(env: &Env, grant_id: u64) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::CurrentVersion(grant_id))
+            .unwrap_or(0)
+    }
+
+    pub fn set_current_version(env: &Env, grant_id: u64, version: u32) {
+        let key = DataKey::CurrentVersion(grant_id);
+        env.storage().persistent().set(&key, &version);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    pub fn get_amendment(env: &Env, grant_id: u64, version: u32) -> Option<Amendment> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Amendment(grant_id, version))
+    }
+
+    pub fn set_amendment(env: &Env, grant_id: u64, version: u32, amendment: &Amendment) {
+        let key = DataKey::Amendment(grant_id, version);
+        env.storage().persistent().set(&key, amendment);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    pub fn get_amendment_history(env: &Env, grant_id: u64) -> Vec<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AmendmentHistory(grant_id))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    pub fn set_amendment_history(env: &Env, grant_id: u64, history: &Vec<u32>) {
+        let key = DataKey::AmendmentHistory(grant_id);
+        env.storage().persistent().set(&key, history);
         Self::bump_persistent_ttl(env, &key);
     }
 
