@@ -49,8 +49,10 @@ mod scoring;
 mod split_payment;
 mod storage;
 mod streaming;
+mod syndication;
 mod token_swap;
 mod types;
+mod versioning;
 
 pub use errors::ContractError;
 pub use events::Events;
@@ -62,6 +64,7 @@ pub use types::{
     CriterionStatus, DexConfig, Dispute, DisputeStatus, EscrowAccount, EscrowLifecycleState,
     EscrowMode, EscrowState, EvidenceField, EvidenceFieldType, EvidenceSchema, FeeRecord,
     FunderLedger, Grant, GrantArchetype, GrantCategory, GrantFund, GrantStatus, GrantSummary, GrantTag,
+    GrantVersion, Amendment, AmendmentStatus,
     GrantTemplate, HookCallResult, HookEvent, HookRegistration, InsuranceClaim, InsurancePolicy,
     Invoice, InvoiceStatus, IpRights, LicenseRecord, LicenseType, LineItem, MerkleCommitment,
     MerkleProof, MigrationRecord, Milestone, MilestoneDag, MilestoneDependency, MilestoneNft,
@@ -72,8 +75,8 @@ pub use types::{
     RelayAllowance, RelayConfig, RelayRecord, RenewalProposal, RenewalStatus, ReputationTier,
     ReviewerAvailability, ReviewerProfile, ReviewerRequest, ReviewerRequestStatus, Role,
     RoleAssignment, RollingWindow, ScoreResult, ScoringDimension, ScoringRubric, ScoringWeight,
-    SignatureStatus, SplitRecipient, StructuredEvidence, SwapResult, SwapRoute, TokenMetric,
-    TransferProposal, TransferableRole, VoiceCredits, VotingMechanism,
+    SignatureStatus, SplitRecipient, StructuredEvidence, SwapResult, SwapRoute, SyndicateGrant,
+    SyndicateMember, SyndicateStatus, TokenMetric, TransferProposal, TransferableRole, VoiceCredits, VotingMechanism,
 };
 
 use metrics::MetricField;
@@ -2575,6 +2578,138 @@ impl StellarGrantsContract {
         split_payment::get_split(&env, grant_id, milestone_idx)
     }
 
+    // ── Issue #578: Cross-Protocol Grant Syndication ─────────────────────────
+
+    pub fn form_syndicate(
+        env: Env,
+        lead: Address,
+        grant_id: u64,
+        target_total: i128,
+        min_commitment: i128,
+        max_members: u32,
+        deadline_ledgers: u32,
+    ) -> Result<(), ContractError> {
+        emergency::require_not_paused(&env)?;
+        lead.require_auth();
+        syndication::form_syndicate(
+            &env,
+            &lead,
+            grant_id,
+            target_total,
+            min_commitment,
+            max_members,
+            deadline_ledgers,
+        )
+    }
+
+    pub fn join_syndicate(
+        env: Env,
+        member: Address,
+        grant_id: u64,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        emergency::require_not_paused(&env)?;
+        member.require_auth();
+        syndication::join_syndicate(&env, &member, grant_id, amount)
+    }
+
+    pub fn close_syndicate(
+        env: Env,
+        lead: Address,
+        grant_id: u64,
+    ) -> Result<(), ContractError> {
+        emergency::require_not_paused(&env)?;
+        lead.require_auth();
+        syndication::close_syndicate(&env, &lead, grant_id)
+    }
+
+    pub fn record_payout_allocation(
+        env: Env,
+        grant_id: u64,
+        milestone_idx: u32,
+        payout: i128,
+    ) -> Result<(), ContractError> {
+        syndication::record_payout_allocation(&env, grant_id, milestone_idx, payout)
+    }
+
+    pub fn withdraw_syndicate(
+        env: Env,
+        member: Address,
+        grant_id: u64,
+    ) -> Result<i128, ContractError> {
+        member.require_auth();
+        syndication::withdraw_syndicate(&env, &member, grant_id)
+    }
+
+    pub fn get_syndicate_member(
+        env: Env,
+        grant_id: u64,
+        member: Address,
+    ) -> Option<SyndicateMember> {
+        syndication::get_member(&env, grant_id, &member)
+    }
+
+    pub fn get_syndicate_members(env: Env, grant_id: u64) -> Vec<SyndicateMember> {
+        syndication::get_members(&env, grant_id)
+    }
+
+    pub fn get_syndicate(env: Env, grant_id: u64) -> Option<SyndicateGrant> {
+        syndication::get_syndicate(&env, grant_id)
+    }
+
+    // ── Issue #591: Grant Specification Versioning ───────────────────────────
+
+    pub fn propose_amendment(
+        env: Env,
+        owner: Address,
+        grant_id: u64,
+        changed_fields: Vec<String>,
+        new_values: Vec<String>,
+        rationale: String,
+    ) -> Result<u32, ContractError> {
+        emergency::require_not_paused(&env)?;
+        owner.require_auth();
+        versioning::propose_amendment(
+            &env,
+            &owner,
+            grant_id,
+            changed_fields,
+            new_values,
+            rationale,
+        )
+    }
+
+    pub fn vote_amendment(
+        env: Env,
+        reviewer: Address,
+        grant_id: u64,
+        amendment_version: u32,
+        approve: bool,
+    ) -> Result<AmendmentStatus, ContractError> {
+        reviewer.require_auth();
+        versioning::vote_amendment(&env, &reviewer, grant_id, amendment_version, approve)
+    }
+
+    pub fn apply_amendment(
+        env: Env,
+        grant_id: u64,
+        amendment_version: u32,
+    ) -> Result<GrantVersion, ContractError> {
+        versioning::apply_amendment(&env, grant_id, amendment_version)
+    }
+
+    pub fn get_version(env: Env, grant_id: u64, version: u32) -> Option<GrantVersion> {
+        versioning::get_version(&env, grant_id, version)
+    }
+
+    pub fn current_version(env: Env, grant_id: u64) -> u32 {
+        versioning::current_version(&env, grant_id)
+    }
+
+    pub fn amendment_history(env: Env, grant_id: u64) -> Vec<Amendment> {
+        versioning::amendment_history(&env, grant_id)
+    }
+
     // ── Issue #568: Grant Ownership and Role Transfer ─────────────────────────
 
     /// Propose transferring grant ownership or a reviewer role to a new address.
@@ -2762,6 +2897,7 @@ pub(crate) fn internal_grant_create(
     };
 
     Storage::set_grant(env, grant_id, &grant);
+    versioning::create_initial_version(env, &grant);
     Storage::set_escrow_state(
         env,
         grant_id,
@@ -2796,5 +2932,3 @@ pub(crate) fn internal_grant_create(
 
     Ok(grant_id)
 }
-
-

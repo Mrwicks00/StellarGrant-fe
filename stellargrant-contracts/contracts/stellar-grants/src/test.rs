@@ -3,7 +3,8 @@ mod tests {
     use crate::audit;
     use crate::storage::Storage;
     use crate::types::{
-        AuditAction, ContractError, Grant, GrantFund, GrantStatus, Milestone, MilestoneState,
+        AmendmentStatus, AuditAction, ContractError, Grant, GrantFund, GrantStatus, Milestone,
+        MilestoneState,
     };
     use crate::StellarGrantsContract;
     use crate::StellarGrantsContractClient;
@@ -47,6 +48,7 @@ mod tests {
                 funders: Vec::new(env),
                 reason: None,
                 timestamp: env.ledger().timestamp(),
+                require_compliance: None,
             };
             Storage::set_grant(env, grant_id, &grant);
         });
@@ -193,6 +195,7 @@ mod tests {
             funders,
             reason: None,
             timestamp: env.ledger().timestamp(),
+            require_compliance: None,
         };
 
         env.as_contract(&contract_id, || {
@@ -426,5 +429,179 @@ mod tests {
         let log = client.get_audit_log(&grant_id);
         assert_eq!(log.len(), 1);
         assert_eq!(log.get(0).unwrap().action, AuditAction::MilestoneApproved);
+    }
+
+    fn create_client_grant(
+        env: &Env,
+        client: &StellarGrantsContractClient<'_>,
+        owner: &Address,
+        token: &Address,
+        reviewers: Vec<Address>,
+    ) -> u64 {
+        client.grant_create(
+            owner,
+            &String::from_str(env, "Title"),
+            &String::from_str(env, "Description"),
+            token,
+            &1000,
+            &500,
+            &2,
+            &reviewers,
+        )
+    }
+
+    #[test]
+    fn test_syndicate_two_members_split_50_50() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _) = setup_test(&env);
+        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_id = token_contract.address();
+        let token_admin = token::StellarAssetClient::new(&env, &token_id);
+        let owner = Address::generate(&env);
+        let member1 = Address::generate(&env);
+        let member2 = Address::generate(&env);
+        let grant_id = create_client_grant(&env, &client, &owner, &token_id, Vec::new(&env));
+
+        token_admin.mint(&member1, &500);
+        token_admin.mint(&member2, &500);
+
+        client.form_syndicate(&owner, &grant_id, &1000, &100, &5, &10);
+        client.join_syndicate(&member1, &grant_id, &500);
+        client.join_syndicate(&member2, &grant_id, &500);
+        client.close_syndicate(&owner, &grant_id);
+
+        let first = client.get_syndicate_member(&grant_id, &member1).unwrap();
+        let second = client.get_syndicate_member(&grant_id, &member2).unwrap();
+        assert_eq!(first.share_bps, 5000);
+        assert_eq!(second.share_bps, 5000);
+        assert_eq!(client.get_grant(&grant_id).escrow_balance, 1000);
+    }
+
+    #[test]
+    fn test_syndicate_partial_funding_cannot_close() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _) = setup_test(&env);
+        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_id = token_contract.address();
+        let token_admin = token::StellarAssetClient::new(&env, &token_id);
+        let owner = Address::generate(&env);
+        let member = Address::generate(&env);
+        let grant_id = create_client_grant(&env, &client, &owner, &token_id, Vec::new(&env));
+
+        token_admin.mint(&member, &400);
+        client.form_syndicate(&owner, &grant_id, &1000, &100, &5, &10);
+        client.join_syndicate(&member, &grant_id, &400);
+
+        let result = client.try_close_syndicate(&owner, &grant_id);
+        assert_eq!(result, Err(Ok(ContractError::InvalidInput.into())));
+    }
+
+    #[test]
+    fn test_syndicate_deadline_passed_member_can_withdraw() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _) = setup_test(&env);
+        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_id = token_contract.address();
+        let token_admin = token::StellarAssetClient::new(&env, &token_id);
+        let owner = Address::generate(&env);
+        let member = Address::generate(&env);
+        let grant_id = create_client_grant(&env, &client, &owner, &token_id, Vec::new(&env));
+
+        token_admin.mint(&member, &400);
+        client.form_syndicate(&owner, &grant_id, &1000, &100, &5, &1);
+        client.join_syndicate(&member, &grant_id, &400);
+        env.ledger().set_sequence_number(env.ledger().sequence() + 2);
+
+        assert_eq!(client.withdraw_syndicate(&member, &grant_id), 400);
+        let token_client = token::Client::new(&env, &token_id);
+        assert_eq!(token_client.balance(&member), 400);
+    }
+
+    #[test]
+    fn test_versioning_create_propose_approve_apply_v2_exists() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, _) = setup_test(&env);
+        let owner = Address::generate(&env);
+        let reviewer = Address::generate(&env);
+        let token = Address::generate(&env);
+        let mut reviewers = Vec::new(&env);
+        reviewers.push_back(reviewer.clone());
+        let grant_id = create_client_grant(&env, &client, &owner, &token, reviewers);
+
+        let mut fields = Vec::new(&env);
+        fields.push_back(String::from_str(&env, "title"));
+        let mut values = Vec::new(&env);
+        values.push_back(String::from_str(&env, "Updated Title"));
+
+        let version = client.propose_amendment(
+            &owner,
+            &grant_id,
+            &fields,
+            &values,
+            &String::from_str(&env, "Scope refined"),
+        );
+        assert_eq!(
+            client.vote_amendment(&reviewer, &grant_id, &version, &true),
+            AmendmentStatus::Approved
+        );
+        let v2 = client.apply_amendment(&grant_id, &version);
+        assert_eq!(v2.version, 2);
+        assert_eq!(v2.title, String::from_str(&env, "Updated Title"));
+        assert_eq!(client.current_version(&grant_id), 2);
+        assert_eq!(client.amendment_history(&grant_id).len(), 1);
+    }
+
+    #[test]
+    fn test_versioning_rejected_amendment_no_new_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, _) = setup_test(&env);
+        let owner = Address::generate(&env);
+        let reviewer = Address::generate(&env);
+        let token = Address::generate(&env);
+        let mut reviewers = Vec::new(&env);
+        reviewers.push_back(reviewer.clone());
+        let grant_id = create_client_grant(&env, &client, &owner, &token, reviewers);
+
+        let mut fields = Vec::new(&env);
+        fields.push_back(String::from_str(&env, "title"));
+        let mut values = Vec::new(&env);
+        values.push_back(String::from_str(&env, "Rejected Title"));
+
+        let version = client.propose_amendment(
+            &owner,
+            &grant_id,
+            &fields,
+            &values,
+            &String::from_str(&env, "Nope"),
+        );
+        assert_eq!(
+            client.vote_amendment(&reviewer, &grant_id, &version, &false),
+            AmendmentStatus::Rejected
+        );
+        let result = client.try_apply_amendment(&grant_id, &version);
+        assert_eq!(result, Err(Ok(ContractError::InvalidState.into())));
+        assert_eq!(client.current_version(&grant_id), 1);
+    }
+
+    #[test]
+    fn test_versioning_get_v1_returns_original_spec() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, _) = setup_test(&env);
+        let owner = Address::generate(&env);
+        let token = Address::generate(&env);
+        let grant_id = create_client_grant(&env, &client, &owner, &token, Vec::new(&env));
+
+        let v1 = client.get_version(&grant_id, &1).unwrap();
+        assert_eq!(v1.version, 1);
+        assert_eq!(v1.title, String::from_str(&env, "Title"));
+        assert_eq!(v1.description, String::from_str(&env, "Description"));
+        assert_eq!(v1.total_amount, 1000);
+        assert_eq!(v1.total_milestones, 2);
     }
 }
