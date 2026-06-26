@@ -1154,6 +1154,118 @@ pub struct RoleAssignment {
     pub is_active: bool,
 }
 
+// ── Issue #579: IP License Tracking ──────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum LicenseType {
+    OpenSource = 0,
+    Proprietary = 1,
+    CreativeCommons = 2,
+    Custom = 3,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IpRights {
+    pub commercial_use: bool,
+    pub modification: bool,
+    pub distribution: bool,
+    pub sublicense: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LicenseRecord {
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub spdx_id: String,
+    pub license_type: LicenseType,
+    pub rights: IpRights,
+    pub restrictions: String,
+    pub attached_by: Address,
+    pub attached_at: u64,
+}
+
+// ── Issue #592: Multi-Recipient Payment Splitting ─────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SplitRecipient {
+    pub recipient: Address,
+    pub share_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaymentSplit {
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub recipients: Vec<SplitRecipient>,
+    pub registered_by: Address,
+    pub registered_at: u64,
+}
+
+// ── Issue #568: Grant Ownership and Role Transfer ─────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum TransferableRole {
+    Owner = 0,
+    Reviewer = 1,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransferProposal {
+    pub grant_id: u64,
+    pub current_holder: Address,
+    pub proposed_new_holder: Address,
+    pub role: TransferableRole,
+    pub reviewer_to_replace: Option<Address>,
+    pub proposed_at: u64,
+}
+
+// ── Issue #583: Typed Evidence Schemas ───────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum EvidenceFieldType {
+    Url = 0,
+    Text = 1,
+    Number = 2,
+    Percentage = 3,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvidenceField {
+    pub name: String,
+    pub field_type: EvidenceFieldType,
+    pub required: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvidenceSchema {
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub fields: Vec<EvidenceField>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StructuredEvidence {
+    pub grant_id: u64,
+    pub milestone_idx: u32,
+    pub values: Map<String, String>,
+    pub submitted_by: Address,
+    pub submitted_at: u64,
+}
+
 // ── Crowdfund Module ──────────────────────────────────────────────────────────
 
 #[contracttype]

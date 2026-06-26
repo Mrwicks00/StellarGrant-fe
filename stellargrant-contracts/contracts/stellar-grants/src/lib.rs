@@ -14,16 +14,19 @@ mod dispute;
 mod emergency;
 mod errors;
 mod escrow;
+mod evidence_schema;
 mod events;
 mod factory;
 mod fees;
 mod governance;
 mod grant_renewal;
 mod grant_tags;
+mod grant_transfer;
 mod hooks;
 mod insurance;
 mod interfaces;
 mod invoice;
+mod license;
 pub mod merkle;
 mod metrics;
 mod migration;
@@ -39,6 +42,7 @@ mod reputation;
 mod relay;
 mod reviewer_pool;
 mod scoring;
+mod split_payment;
 mod storage;
 mod streaming;
 mod token_swap;
@@ -52,21 +56,23 @@ pub use types::{
     ChecklistSubmission, ComplianceAttestation, ComplianceLevel, ComplianceStatus, ContractVersion,
     CrowdfundCampaign, CrowdfundPledge, CrowdfundStatus,
     CriterionStatus, DexConfig, Dispute, DisputeStatus, EscrowAccount, EscrowLifecycleState,
-    EscrowMode, EscrowState, FeeRecord, FunderLedger, Grant, GrantArchetype, GrantCategory,
-    GrantFund, GrantStatus, GrantTag, GrantTemplate, HookCallResult, HookEvent, HookRegistration,
-    InsuranceClaim, InsurancePolicy, Invoice, InvoiceStatus, LineItem, MerkleCommitment,
+    EscrowMode, EscrowState, EvidenceField, EvidenceFieldType, EvidenceSchema, FeeRecord,
+    FunderLedger, Grant, GrantArchetype, GrantCategory, GrantFund, GrantStatus, GrantTag,
+    GrantTemplate, HookCallResult, HookEvent, HookRegistration, InsuranceClaim, InsurancePolicy,
+    Invoice, InvoiceStatus, IpRights, LicenseRecord, LicenseType, LineItem, MerkleCommitment,
     MerkleProof, MigrationRecord, Milestone, MilestoneState, MilestoneSubmission, MultisigProposal,
-    MultisigSigner, OracleConfig, ParamRecord, ParamType, ParamValue, PauseRecord, PaymentStream,
-    PriceQuote, ProtocolConfig, ProtocolMetrics, ProtocolModule, QuadraticVoteRecord,
-    RateLimitAction, RegistryEntry, RegistryEntryType, RelayableAction, RelayAllowance,
-    RelayConfig, RelayRecord, RenewalProposal, RenewalStatus, ReputationTier, ReviewerAvailability,
-    ReviewerProfile, ReviewerRequest, ReviewerRequestStatus, Role, RoleAssignment, RollingWindow,
-    ScoreResult, ScoringDimension, ScoringRubric, ScoringWeight, SignatureStatus, SwapResult,
-    SwapRoute, TokenMetric, VoiceCredits, VotingMechanism,
+    MultisigSigner, OracleConfig, ParamRecord, ParamType, ParamValue, PauseRecord, PaymentSplit,
+    PaymentStream, PriceQuote, ProtocolConfig, ProtocolMetrics, ProtocolModule, QuadraticVoteRecord,
+    RateLimitAction, RegistryEntry, RegistryEntryType, RelayableAction, RelayAllowance, RelayConfig,
+    RelayRecord, RenewalProposal, RenewalStatus, ReputationTier, ReviewerAvailability, ReviewerProfile,
+    ReviewerRequest, ReviewerRequestStatus, Role, RoleAssignment, RollingWindow, ScoreResult,
+    ScoringDimension, ScoringRubric, ScoringWeight, SignatureStatus, SplitRecipient,
+    StructuredEvidence, SwapResult, SwapRoute, TokenMetric, TransferProposal, TransferableRole,
+    VoiceCredits, VotingMechanism,
 };
 
 use metrics::MetricField;
-use soroban_sdk::{contract, contractimpl, Address, Bytes, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, Address, Bytes, Env, Map, String, Vec};
 
 #[contract]
 pub struct StellarGrantsContract;
@@ -399,7 +405,20 @@ impl StellarGrantsContract {
         let remaining_balance = grant.escrow_balance - total_paid;
 
         if total_paid > 0 {
-            escrow::release(env, grant_id, &grant.owner, total_paid)?;
+            // Pay each milestone individually so that registered splits are honoured.
+            let mut owner_amount: i128 = 0;
+            for idx in 0..grant.total_milestones {
+                let ms = Storage::get_milestone(env, grant_id, idx)
+                    .ok_or(ContractError::MilestoneNotFound)?;
+                if split_payment::has_split(env, grant_id, idx) {
+                    split_payment::execute_split(env, grant_id, idx, ms.amount)?;
+                } else {
+                    owner_amount = owner_amount.saturating_add(ms.amount);
+                }
+            }
+            if owner_amount > 0 {
+                escrow::release(env, grant_id, &grant.owner, owner_amount)?;
+            }
         }
         if remaining_balance > 0 {
             escrow::refund_all(env, grant_id)?;
@@ -2335,6 +2354,134 @@ impl StellarGrantsContract {
             payout_amount,
         );
     }
+
+    // ── Issue #579: IP License Tracking ──────────────────────────────────────
+
+    /// Attach an IP license record to a milestone deliverable.
+    /// Only the grant owner may call this after the milestone exists.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attach_license(
+        env: Env,
+        caller: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+        spdx_id: String,
+        license_type: LicenseType,
+        rights: IpRights,
+        restrictions: String,
+    ) -> Result<LicenseRecord, ContractError> {
+        emergency::require_not_paused(&env)?;
+        license::attach_license(
+            &env, &caller, grant_id, milestone_idx, spdx_id, license_type, rights, restrictions,
+        )
+    }
+
+    /// Return the license record for a milestone deliverable, if any.
+    pub fn get_license(env: Env, grant_id: u64, milestone_idx: u32) -> Option<LicenseRecord> {
+        license::get_license(&env, grant_id, milestone_idx)
+    }
+
+    // ── Issue #592: Multi-Recipient Payment Splitting ─────────────────────────
+
+    /// Register a payment split for a milestone.
+    /// `recipients` share_bps values must sum to 10 000.
+    pub fn register_payment_split(
+        env: Env,
+        caller: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+        recipients: Vec<SplitRecipient>,
+    ) -> Result<(), ContractError> {
+        emergency::require_not_paused(&env)?;
+        split_payment::register_split(&env, &caller, grant_id, milestone_idx, recipients)
+    }
+
+    /// Return the registered payment split for a milestone, if any.
+    pub fn get_payment_split(
+        env: Env,
+        grant_id: u64,
+        milestone_idx: u32,
+    ) -> Option<PaymentSplit> {
+        split_payment::get_split(&env, grant_id, milestone_idx)
+    }
+
+    // ── Issue #568: Grant Ownership and Role Transfer ─────────────────────────
+
+    /// Propose transferring grant ownership or a reviewer role to a new address.
+    /// The new holder must call `accept_grant_transfer` to complete the handoff.
+    pub fn propose_grant_transfer(
+        env: Env,
+        caller: Address,
+        grant_id: u64,
+        new_holder: Address,
+        role: TransferableRole,
+        reviewer_to_replace: Option<Address>,
+    ) -> Result<(), ContractError> {
+        emergency::require_not_paused(&env)?;
+        grant_transfer::propose_transfer(
+            &env, &caller, grant_id, new_holder, role, reviewer_to_replace,
+        )
+    }
+
+    /// Accept a pending transfer proposal. Caller must be the proposed new holder.
+    pub fn accept_grant_transfer(
+        env: Env,
+        new_holder: Address,
+        grant_id: u64,
+    ) -> Result<(), ContractError> {
+        emergency::require_not_paused(&env)?;
+        grant_transfer::accept_transfer(&env, &new_holder, grant_id)
+    }
+
+    /// Return the pending transfer proposal for a grant, if any.
+    pub fn get_transfer_proposal(env: Env, grant_id: u64) -> Option<TransferProposal> {
+        grant_transfer::get_transfer_proposal(&env, grant_id)
+    }
+
+    // ── Issue #583: Typed Evidence Schemas ───────────────────────────────────
+
+    /// Define a typed evidence schema for a milestone.
+    /// Contributors must submit conforming structured evidence before `milestone_submit`.
+    pub fn set_evidence_schema(
+        env: Env,
+        caller: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+        fields: Vec<EvidenceField>,
+    ) -> Result<(), ContractError> {
+        emergency::require_not_paused(&env)?;
+        evidence_schema::set_schema(&env, &caller, grant_id, milestone_idx, fields)
+    }
+
+    /// Submit structured evidence for a milestone, conforming to the registered schema.
+    pub fn submit_structured_evidence(
+        env: Env,
+        caller: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+        values: Map<String, String>,
+    ) -> Result<(), ContractError> {
+        emergency::require_not_paused(&env)?;
+        evidence_schema::submit_evidence(&env, &caller, grant_id, milestone_idx, values)
+    }
+
+    /// Return the evidence schema for a milestone, if any.
+    pub fn get_evidence_schema(
+        env: Env,
+        grant_id: u64,
+        milestone_idx: u32,
+    ) -> Option<EvidenceSchema> {
+        evidence_schema::get_schema(&env, grant_id, milestone_idx)
+    }
+
+    /// Return the submitted structured evidence for a milestone, if any.
+    pub fn get_structured_evidence(
+        env: Env,
+        grant_id: u64,
+        milestone_idx: u32,
+    ) -> Option<StructuredEvidence> {
+        evidence_schema::get_evidence(&env, grant_id, milestone_idx)
+    }
 }
 
 fn apply_milestone_submission(
@@ -2356,6 +2503,9 @@ fn apply_milestone_submission(
             return Err(ContractError::MilestoneAlreadySubmitted);
         }
     }
+
+    // Validate structured evidence against the schema when one has been registered.
+    evidence_schema::validate_evidence(env, grant_id, milestone_idx)?;
 
     let milestone = Milestone {
         idx: milestone_idx,

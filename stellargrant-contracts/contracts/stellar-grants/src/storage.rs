@@ -1,11 +1,12 @@
 use crate::types::{
     AcceptanceCriteria, AnalyticsSnapshot, AuditEntry, BreakerState, CategoryStats, ChecklistSubmission, ComplianceAttestation,
     ContractError, ContractVersion, ContributorProfile, CrowdfundCampaign, CrowdfundPledge, DexConfig, Dispute, EscrowAccount,
-    EscrowState, FunderLedger, Grant, GrantCategory, GrantTag, HookEvent, HookRegistration,
-    InsuranceClaim, InsurancePolicy, Invoice, MerkleCommitment, MigrationRecord, Milestone,
-    MultisigProposal, OracleConfig, ParamRecord, PauseRecord, PaymentStream, ProtocolConfig, ProtocolMetrics,
+    EscrowState, EvidenceSchema, FunderLedger, Grant, GrantCategory, GrantTag, HookEvent, HookRegistration,
+    InsuranceClaim, InsurancePolicy, Invoice, LicenseRecord, MerkleCommitment, MigrationRecord, Milestone,
+    MultisigProposal, OracleConfig, ParamRecord, PauseRecord, PaymentSplit, PaymentStream, ProtocolConfig, ProtocolMetrics,
     ProtocolModule, QuadraticVoteRecord, RateLimitAction, RateLimitRecord, RegistryEntry, RelayAllowance, RelayConfig, RenewalProposal,
-    ReviewerProfile, ReviewerRequest, Role, RoleAssignment, RollingWindow, ScoringRubric, TokenMetric, VoiceCredits, VotingMechanism,
+    ReviewerProfile, ReviewerRequest, Role, RoleAssignment, RollingWindow, ScoringRubric, StructuredEvidence, TokenMetric,
+    TransferProposal, VoiceCredits, VotingMechanism,
 };
 use soroban_sdk::{contracttype, Address, Env, Symbol, Vec};
 
@@ -119,6 +120,15 @@ pub enum DataKey {
     CrowdfundPledge(u64, Address),
     CrowdfundBackers(u64),
     CrowdfundCounter,
+    // Issue #579: IP License Tracking
+    LicenseRecord(u64, u32),
+    // Issue #592: Multi-Recipient Payment Splitting
+    PaymentSplit(u64, u32),
+    // Issue #568: Grant Transfer
+    TransferProposal(u64),
+    // Issue #583: Typed Evidence Schemas
+    EvidenceSchema(u64, u32),
+    StructuredEvidence(u64, u32),
 }
 
 const PERSISTENT_TTL_THRESHOLD: u32 = 100_000;
@@ -1202,6 +1212,93 @@ impl Storage {
     pub fn set_crowdfund_backers(env: &Env, campaign_id: u64, backers: &Vec<Address>) {
         let key = DataKey::CrowdfundBackers(campaign_id);
         env.storage().persistent().set(&key, backers);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    // ── Issue #579: IP License Tracking ──────────────────────────────────────
+
+    pub fn get_license_record(env: &Env, grant_id: u64, milestone_idx: u32) -> Option<LicenseRecord> {
+        let key = DataKey::LicenseRecord(grant_id, milestone_idx);
+        let v = env.storage().persistent().get(&key);
+        if v.is_some() {
+            Self::bump_persistent_ttl(env, &key);
+        }
+        v
+    }
+
+    pub fn set_license_record(env: &Env, grant_id: u64, milestone_idx: u32, record: &LicenseRecord) {
+        let key = DataKey::LicenseRecord(grant_id, milestone_idx);
+        env.storage().persistent().set(&key, record);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    // ── Issue #592: Multi-Recipient Payment Splitting ─────────────────────────
+
+    pub fn get_payment_split(env: &Env, grant_id: u64, milestone_idx: u32) -> Option<PaymentSplit> {
+        let key = DataKey::PaymentSplit(grant_id, milestone_idx);
+        let v = env.storage().persistent().get(&key);
+        if v.is_some() {
+            Self::bump_persistent_ttl(env, &key);
+        }
+        v
+    }
+
+    pub fn set_payment_split(env: &Env, grant_id: u64, milestone_idx: u32, split: &PaymentSplit) {
+        let key = DataKey::PaymentSplit(grant_id, milestone_idx);
+        env.storage().persistent().set(&key, split);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    // ── Issue #568: Grant Transfer ────────────────────────────────────────────
+
+    pub fn get_transfer_proposal(env: &Env, grant_id: u64) -> Option<TransferProposal> {
+        let key = DataKey::TransferProposal(grant_id);
+        let v = env.storage().persistent().get(&key);
+        if v.is_some() {
+            Self::bump_persistent_ttl(env, &key);
+        }
+        v
+    }
+
+    pub fn set_transfer_proposal(env: &Env, grant_id: u64, proposal: &TransferProposal) {
+        let key = DataKey::TransferProposal(grant_id);
+        env.storage().persistent().set(&key, proposal);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    pub fn remove_transfer_proposal(env: &Env, grant_id: u64) {
+        env.storage().persistent().remove(&DataKey::TransferProposal(grant_id));
+    }
+
+    // ── Issue #583: Typed Evidence Schemas ───────────────────────────────────
+
+    pub fn get_evidence_schema(env: &Env, grant_id: u64, milestone_idx: u32) -> Option<EvidenceSchema> {
+        let key = DataKey::EvidenceSchema(grant_id, milestone_idx);
+        let v = env.storage().persistent().get(&key);
+        if v.is_some() {
+            Self::bump_persistent_ttl(env, &key);
+        }
+        v
+    }
+
+    pub fn set_evidence_schema(env: &Env, grant_id: u64, milestone_idx: u32, schema: &EvidenceSchema) {
+        let key = DataKey::EvidenceSchema(grant_id, milestone_idx);
+        env.storage().persistent().set(&key, schema);
+        Self::bump_persistent_ttl(env, &key);
+    }
+
+    pub fn get_structured_evidence(env: &Env, grant_id: u64, milestone_idx: u32) -> Option<StructuredEvidence> {
+        let key = DataKey::StructuredEvidence(grant_id, milestone_idx);
+        let v = env.storage().persistent().get(&key);
+        if v.is_some() {
+            Self::bump_persistent_ttl(env, &key);
+        }
+        v
+    }
+
+    pub fn set_structured_evidence(env: &Env, grant_id: u64, milestone_idx: u32, evidence: &StructuredEvidence) {
+        let key = DataKey::StructuredEvidence(grant_id, milestone_idx);
+        env.storage().persistent().set(&key, evidence);
         Self::bump_persistent_ttl(env, &key);
     }
 }
