@@ -60,6 +60,7 @@ mod reputation;
 mod reputation_decay;
 mod reviewer_pool;
 mod reviewer_reward;
+pub mod reviewer_sla;
 mod scoring;
 mod split_payment;
 mod storage;
