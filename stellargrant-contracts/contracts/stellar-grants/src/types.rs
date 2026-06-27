@@ -67,6 +67,11 @@ pub struct Milestone {
     pub submission_timestamp: u64,
     /// Optional milestone deadline (ledger timestamp). Updated by approved extensions (#572).
     pub deadline: Option<u64>,
+    /// Snapshot of the reviewer count at submission time (#624).
+    /// Quorum calculations use this value instead of the live reviewer list
+    /// to prevent premature approval or impossible-to-reach quorum when
+    /// reviewers are added or removed mid-vote.
+    pub reviewer_count_snapshot: u32,
 }
 
 #[contracttype]
