@@ -71,8 +71,10 @@ mod types;
 mod versioning;
 pub mod math;
 mod whitelist;
-mod lockup;
-mod data_export;
+mod batch_read;
+mod conditional_release;
+mod auto_approve;
+mod grant_timer;
 
 pub use errors::ContractError;
 pub use events::Events;
@@ -228,10 +230,16 @@ pub use types::{
     VotingMechanism,
     // Issue #512: whitelist
     WhitelistEntry, WhitelistMode, WhitelistScope,
-    // Issue #609: lockup
-    LockupRecord, LockupStatus,
-    // Issue #619: data export
-    ExportGrant, ExportGrantPage, ExportMilestone, ExportMilestonePage,
+    // Issue #622: batch read views
+    DashboardView, ExportGrant, GrantDetailView, ReviewerView,
+    // Issue #613: conditional release
+    ConditionResult, ConditionType, ReleaseCondition,
+    // Issue #612: auto-approve
+    AutoApproveConfig, AutoApproveRecord,
+    // Issue #618: grant timers
+    TimerRecord, TimerTriggerType,
+    // Batch operation types
+    BatchItemResult, BatchMilestoneVote, BatchResult,
 };
 
 use metrics::MetricField;
@@ -3746,6 +3754,151 @@ impl StellarGrantsContract {
     /// Return all entries in a whitelist scope.
     pub fn whitelist_get_entries(env: Env, scope: WhitelistScope) -> Vec<WhitelistEntry> {
         whitelist::get_entries(&env, &scope)
+    }
+
+    // ── Issue #622: Batched Multi-Key Storage Reads ──────────────────────
+
+    /// Return all data needed for the grant detail page. Single RPC call.
+    pub fn batch_grant_detail(env: Env, grant_id: u64) -> Result<GrantDetailView, ContractError> {
+        batch_read::grant_detail(&env, grant_id)
+    }
+
+    /// Return all data needed for the protocol dashboard. Single RPC call.
+    pub fn batch_dashboard(env: Env) -> DashboardView {
+        batch_read::dashboard(&env)
+    }
+
+    /// Return all data needed for a reviewer's personal dashboard.
+    pub fn batch_reviewer_dashboard(env: Env, reviewer: Address) -> ReviewerView {
+        batch_read::reviewer_dashboard(&env, &reviewer)
+    }
+
+    /// Return detail views for multiple grants at once (max 10).
+    pub fn batch_multi_grant_detail(
+        env: Env,
+        grant_ids: Vec<u64>,
+    ) -> Result<Vec<GrantDetailView>, ContractError> {
+        batch_read::multi_grant_detail(&env, grant_ids)
+    }
+
+    /// Return minimal grant cards for a list of grant IDs (cheaper than full detail).
+    pub fn batch_grant_cards(env: Env, grant_ids: Vec<u64>) -> Vec<ExportGrant> {
+        batch_read::grant_cards(&env, grant_ids)
+    }
+
+    // ── Issue #613: Condition-Based Milestone Fund Release ───────────────
+
+    /// Attach release conditions to a milestone. Owner only, before submission.
+    pub fn conditional_attach_conditions(
+        env: Env,
+        owner: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+        conditions: Vec<ReleaseCondition>,
+    ) -> Result<(), ContractError> {
+        conditional_release::attach_conditions(&env, &owner, grant_id, milestone_idx, conditions)
+    }
+
+    /// Check all conditions for a milestone. Returns detailed results per condition.
+    pub fn conditional_check_conditions(
+        env: Env,
+        grant_id: u64,
+        milestone_idx: u32,
+    ) -> Vec<ConditionResult> {
+        conditional_release::check_conditions(&env, grant_id, milestone_idx)
+    }
+
+    /// Return true only if every condition is met.
+    pub fn conditional_all_met(env: Env, grant_id: u64, milestone_idx: u32) -> bool {
+        conditional_release::all_conditions_met(&env, grant_id, milestone_idx)
+    }
+
+    /// Return the conditions attached to a milestone.
+    pub fn conditional_get_conditions(
+        env: Env,
+        grant_id: u64,
+        milestone_idx: u32,
+    ) -> Vec<ReleaseCondition> {
+        conditional_release::get_conditions(&env, grant_id, milestone_idx)
+    }
+
+    // ── Issue #612: Automatic Milestone Approval After Reviewer Timeout ──
+
+    /// Configure auto-approve for a grant. Owner only.
+    pub fn auto_approve_set_config(
+        env: Env,
+        owner: Address,
+        grant_id: u64,
+        config: AutoApproveConfig,
+    ) -> Result<(), ContractError> {
+        auto_approve::set_config(&env, &owner, grant_id, config)
+    }
+
+    /// Attempt auto-approve for a milestone. Anyone may call; enforces all conditions.
+    pub fn auto_approve_try(
+        env: Env,
+        caller: Address,
+        grant_id: u64,
+        milestone_idx: u32,
+    ) -> Result<bool, ContractError> {
+        auto_approve::try_auto_approve(&env, &caller, grant_id, milestone_idx)
+    }
+
+    /// Return whether auto-approve conditions are currently met for a milestone.
+    pub fn auto_approve_can(env: Env, grant_id: u64, milestone_idx: u32) -> bool {
+        auto_approve::can_auto_approve(&env, grant_id, milestone_idx)
+    }
+
+    /// Return the auto-approve config for a grant.
+    pub fn auto_approve_get_config(env: Env, grant_id: u64) -> Option<AutoApproveConfig> {
+        auto_approve::get_config(&env, grant_id)
+    }
+
+    /// Return the auto-approve record if it was triggered.
+    pub fn auto_approve_get_record(
+        env: Env,
+        grant_id: u64,
+        milestone_idx: u32,
+    ) -> Option<AutoApproveRecord> {
+        auto_approve::get_record(&env, grant_id, milestone_idx)
+    }
+
+    // ── Issue #618: Automatic Lifecycle Transitions Based on Ledger Time ─
+
+    /// Register a new timer for a grant. Owner or protocol (for defaults).
+    pub fn timer_register(
+        env: Env,
+        caller: Address,
+        grant_id: u64,
+        trigger_type: TimerTriggerType,
+        fires_at: u64,
+    ) -> Result<(), ContractError> {
+        grant_timer::register_timer(&env, &caller, grant_id, trigger_type, fires_at)
+    }
+
+    /// Attempt to fire all eligible timers for a grant. Anyone can call.
+    pub fn timer_trigger(env: Env, caller: Address, grant_id: u64) -> u32 {
+        grant_timer::trigger_timers(&env, &caller, grant_id)
+    }
+
+    /// Return all timers for a grant.
+    pub fn timer_get_timers(env: Env, grant_id: u64) -> Vec<TimerRecord> {
+        grant_timer::get_timers(&env, grant_id)
+    }
+
+    /// Return only unfired, eligible (past fires_at) timers.
+    pub fn timer_pending(env: Env, grant_id: u64) -> Vec<TimerRecord> {
+        grant_timer::pending_timers(&env, grant_id)
+    }
+
+    /// Cancel a timer (owner or admin only).
+    pub fn timer_cancel(
+        env: Env,
+        caller: Address,
+        grant_id: u64,
+        trigger_type: TimerTriggerType,
+    ) -> Result<(), ContractError> {
+        grant_timer::cancel_timer(&env, &caller, grant_id, trigger_type)
     }
 }
 

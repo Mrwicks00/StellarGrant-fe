@@ -184,9 +184,9 @@ pub enum DataKey {
     Arbitration(ArbitrationKey),
     Bond(BondKey),
     Collateral(CollateralKey),
-    Provenance(ProvenanceKey),
-    ReviewerReward(ReviewerRewardKey),
-    Matching(MatchingKey),
+    ConditionalRelease(ConditionalReleaseKey),
+    AutoApprove(AutoApproveKey),
+    GrantTimer(GrantTimerKey),
 
     // Streaming
     Stream(u32),
