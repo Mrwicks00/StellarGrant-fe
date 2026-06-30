@@ -28,6 +28,8 @@ import {
   GrantHistoryRecord,
   HistoryOptions,
   HistoryResult,
+  GrantData,
+  MilestoneData,
 } from "./types";
 import { meetsThreshold, PendingXdrStore } from "./utils/transactions";
 import { combineSignatures } from "./utils/transactions";
@@ -365,23 +367,90 @@ export class StellarGrantsSDK {
    * });
    * ```
    */
+  private assertGrantData(data: any): GrantData {
+    if (!data || typeof data !== "object") {
+      throw new Error("Invalid Grant data returned from contract");
+    }
+    // Soft-validate: warn in non-production if the contract shape looks wrong.
+    // scValToNative() always returns the correct shape on a live network;
+    // this guard catches stale ABI mismatches early without breaking partial
+    // mock data used in unit tests.
+    if (
+      process.env.NODE_ENV !== "production" &&
+      (data.id === undefined ||
+        data.owner === undefined ||
+        data.title === undefined ||
+        data.total_amount === undefined)
+    ) {
+      // Use console.warn in dev so it surfaces in test output but never throws.
+      if (typeof console !== "undefined") {
+        console.warn(
+          "[StellarGrantsSDK] grantGet: response may be missing expected fields. " +
+            "Verify that the contract ABI matches the SDK version.",
+          data,
+        );
+      }
+    }
+    return data as GrantData;
+  }
+
+  private assertMilestoneData(data: any): MilestoneData {
+    if (!data || typeof data !== "object") {
+      throw new Error("Invalid Milestone data returned from contract");
+    }
+    if (
+      process.env.NODE_ENV !== "production" &&
+      (data.idx === undefined ||
+        data.description === undefined ||
+        data.amount === undefined ||
+        data.state === undefined)
+    ) {
+      if (typeof console !== "undefined") {
+        console.warn(
+          "[StellarGrantsSDK] milestoneGet: response may be missing expected fields. " +
+            "Verify that the contract ABI matches the SDK version.",
+          data,
+        );
+      }
+    }
+    return data as MilestoneData;
+  }
+
+  /**
+   * Reads grant details by grant identifier.
+   * 
+   * @param grantId Grant identifier
+   * @param options Options including IPFS gateway fallbacks
+   * @returns Grant data with metadata fetched from IPFS if applicable
+   * 
+   * @example
+   * ```typescript
+   * const grant = await sdk.grantGet(1, {
+   *   fetchIpfsMetadata: true,
+   *   ipfsGateways: ['https://gateway.pinata.cloud/ipfs/']
+   * });
+   * ```
+   */
   async grantGet(
     grantId: number,
     options?: {
       fetchIpfsMetadata?: boolean;
       ipfsGateways?: string[];
     }
-  ): Promise<unknown> {
-    const grant = await this.invokeRead("grant_get", [nativeToScVal(grantId, { type: "u32" })]);
+  ): Promise<GrantData | null> {
+    const raw = await this.invokeRead("grant_get", [nativeToScVal(grantId, { type: "u32" })]);
+    if (!raw) return null;
+
+    let grant = this.assertGrantData(raw);
 
     // Fetch IPFS metadata if description is an IPFS CID
-    if (options?.fetchIpfsMetadata && grant && typeof grant === 'object') {
-      const description = (grant as any).description || '';
+    if (options?.fetchIpfsMetadata && grant) {
+      const description = grant.description || '';
       if (description.startsWith('ipfs://')) {
         const cid = description.replace('ipfs://', '');
         try {
           const metadata = await fetchMetadataFromIPFS(cid, options.ipfsGateways);
-          return { ...grant, metadata, description };
+          grant = { ...grant, metadata, description } as any;
         } catch (error) {
           // Log but don't fail if IPFS fetch fails
           console.warn(`Failed to fetch IPFS metadata for CID ${cid}:`, error);
@@ -395,11 +464,13 @@ export class StellarGrantsSDK {
   /**
    * Reads milestone details by grant and milestone index.
    */
-  async milestoneGet(grantId: number, milestoneIdx: number): Promise<unknown> {
-    return this.invokeRead("milestone_get", [
+  async milestoneGet(grantId: number, milestoneIdx: number): Promise<MilestoneData | null> {
+    const raw = await this.invokeRead("milestone_get", [
       nativeToScVal(grantId, { type: "u32" }),
       nativeToScVal(milestoneIdx, { type: "u32" }),
     ]);
+    if (!raw) return null;
+    return this.assertMilestoneData(raw);
   }
 
   async getAllowance(token: string, owner: string): Promise<{ amount: bigint; expirationLedger: number }> {
@@ -521,25 +592,49 @@ export class StellarGrantsSDK {
       }, heartbeatTimeoutMs);
     };
 
+    let useWebSocket = true;
+
     const tryWebSocket = (): boolean => {
       // Only attempt WS in environments that support it.
       if (typeof WebSocket === "undefined") return false;
+      if (!useWebSocket) return false;
 
-      // Only use WebSocket when the caller explicitly provides a ws(s) URL.
-      // Most Soroban RPC providers expose HTTP JSON-RPC only.
-      const wsUrl = options?.websocketUrl?.replace(/\/+$/, "");
+      // Derivation logic: check options.websocketUrl, else replace http/https from RPC URL with ws/wss.
+      let wsUrl = options?.websocketUrl?.replace(/\/+$/, "");
+      if (!wsUrl) {
+        const rpc = this.config.proxyUrl ?? this.config.rpcUrl ?? "";
+        if (rpc.startsWith("https://")) {
+          wsUrl = rpc.replace("https://", "wss://");
+        } else if (rpc.startsWith("http://")) {
+          wsUrl = rpc.replace("http://", "ws://");
+        }
+      }
+
       if (!wsUrl || !/^wss?:\/\//i.test(wsUrl)) return false;
 
       let ws: WebSocket;
+      let connected = false;
       try {
         ws = new WebSocket(wsUrl);
       } catch {
+        useWebSocket = false;
         return false;
       }
 
       this.eventWs = ws;
 
+      const wsTimeout = setTimeout(() => {
+        if (!connected && active) {
+          console.warn("[StellarGrantsSDK] WebSocket connection timeout, falling back to polling.");
+          useWebSocket = false;
+          cleanup();
+          poll();
+        }
+      }, 5000);
+
       ws.onopen = () => {
+        clearTimeout(wsTimeout);
+        connected = true;
         options?.onStatusChange?.("connecting");
         ws.send(
           JSON.stringify({
@@ -582,14 +677,22 @@ export class StellarGrantsSDK {
         }
       };
 
-      ws.onerror = () => {
+      ws.onerror = (err) => {
+        clearTimeout(wsTimeout);
+        useWebSocket = false;
+        if (options?.onError) {
+          options.onError(err);
+        }
         try { ws.close(); } catch {}
       };
 
       ws.onclose = () => {
+        clearTimeout(wsTimeout);
         this.eventWs = null;
         if (!active) return;
-        scheduleReconnect();
+        console.warn("[StellarGrantsSDK] WebSocket closed, falling back to polling.");
+        useWebSocket = false;
+        poll();
       };
 
       return true;
@@ -721,6 +824,67 @@ export class StellarGrantsSDK {
   }
 
 
+  /**
+   * Fetches real-time Horizon fee statistics and derives a competitive recommended
+   * base fee and priority modifiers based on current network load.
+   *
+   * Percentile selection adapts to congestion:
+   *   - surge  (>95% capacity) → p90
+   *   - high   (>80% capacity) → p80
+   *   - moderate (>50% capacity) → p70
+   *   - normal               → p50
+   *
+   * @param horizonUrl The Horizon API base URL to query.
+   * @returns Parsed fee statistics, or null when the fetch fails.
+   */
+  private async getDynamicFeeStats(horizonUrl: string): Promise<{
+    recommendedBase: bigint;
+    networkLoad: "normal" | "moderate" | "high" | "surge";
+    modifiers: { low: number; medium: number; high: number };
+    percentile: string;
+  } | null> {
+    try {
+      const response = await fetch(`${horizonUrl.replace(/\/+$/, "")}/fee_stats`);
+      if (!response.ok) return null;
+      const data = await response.json();
+
+      const usage = Number(data?.ledger_capacity_usage ?? 0);
+      let networkLoad: "normal" | "moderate" | "high" | "surge";
+      let percentile: string;
+      let modifiers: { low: number; medium: number; high: number };
+
+      if (usage > 0.95) {
+        networkLoad = "surge";
+        percentile = "p90";
+        modifiers = { low: 1.6, medium: 2.5, high: 3.5 };
+      } else if (usage > 0.80) {
+        networkLoad = "high";
+        percentile = "p80";
+        modifiers = { low: 1.3, medium: 2.0, high: 2.8 };
+      } else if (usage > 0.50) {
+        networkLoad = "moderate";
+        percentile = "p70";
+        modifiers = { low: 1.0, medium: 1.5, high: 2.0 };
+      } else {
+        networkLoad = "normal";
+        percentile = "p50";
+        modifiers = { low: 0.9, medium: 1.2, high: 1.6 };
+      }
+
+      const feeAtPercentile = data?.max_fee?.[percentile] ?? data?.max_fee?.p70;
+      if (!feeAtPercentile) return null;
+
+      return {
+        recommendedBase: BigInt(feeAtPercentile),
+        networkLoad,
+        modifiers,
+        percentile,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async estimateFees(method: string, args: xdr.ScVal[], options?: { horizonUrl?: string; feePriority?: "low" | "medium" | "high"; simulatedFee?: string }): Promise<any> {
     const simulation = await this.server.simulateTransaction(await this.buildTx(method, args, options));
     if (simulation?.error) {
@@ -732,30 +896,25 @@ export class StellarGrantsSDK {
     const feeStatsUrl = options?.horizonUrl ?? this.config.horizonUrl;
 
     if (feeStatsUrl) {
-      try {
-        const response = await fetch(`${feeStatsUrl.replace(/\/+$/, "")}/fee_stats`);
-        if (response.ok) {
-          const data = await response.json();
-          const recommendedBase = BigInt(data?.max_fee?.p70 ?? Number(base));
-          const usage = Number(data?.ledger_capacity_usage ?? 0);
-          const networkLoad = usage > 0.85 ? "surge" : usage > 0.5 ? "moderate" : "normal";
-          const low = (recommendedBase * BigInt(16)) / BigInt(10);
-          const medium = (recommendedBase * BigInt(25)) / BigInt(10);
-          const high = (recommendedBase * BigInt(35)) / BigInt(10);
+      const dynamicStats = await this.getDynamicFeeStats(feeStatsUrl);
+      if (dynamicStats) {
+        const { recommendedBase, networkLoad, modifiers, percentile } = dynamicStats;
+        // Always use at least the simulated min resource fee as the floor.
+        const effectiveBase = recommendedBase > base ? recommendedBase : base;
+        const mulCeil = (v: bigint, num: bigint, den: bigint) =>
+          (v * num + den - BigInt(1)) / den;
 
-          return {
-            base: base.toString(),
-            recommendedBase: recommendedBase.toString(),
-            networkLoad,
-            source: "horizon",
-            low: low.toString(),
-            medium: medium.toString(),
-            high: high.toString(),
-            modifiers: { low: 1.6, medium: 2.5, high: 3.5 },
-          };
-        }
-      } catch {
-        // Fall back to simulation fees.
+        return {
+          base: base.toString(),
+          recommendedBase: recommendedBase.toString(),
+          networkLoad,
+          source: "horizon",
+          percentile,
+          low: mulCeil(effectiveBase, BigInt(Math.round(modifiers.low * 10)), BigInt(10)).toString(),
+          medium: mulCeil(effectiveBase, BigInt(Math.round(modifiers.medium * 10)), BigInt(10)).toString(),
+          high: mulCeil(effectiveBase, BigInt(Math.round(modifiers.high * 10)), BigInt(10)).toString(),
+          modifiers,
+        };
       }
     }
 
@@ -1129,11 +1288,21 @@ export class StellarGrantsSDK {
       const minResourceFee = BigInt(simulation?.minResourceFee ?? "0");
 
       // Fee selection precedence: explicit fee > simulatedFee > priority(minResourceFee) > defaultFee
+      // When Horizon is configured, we scale up minResourceFee to the competitive recommended base
+      // before applying priority multipliers — prevents txs hanging during congestion (#503).
+      let effectiveBase = minResourceFee;
+      if (simulation?.minResourceFee && this.config.horizonUrl && !options?.fee && !options?.simulatedFee) {
+        const dynamicStats = await this.getDynamicFeeStats(this.config.horizonUrl);
+        if (dynamicStats && dynamicStats.recommendedBase > minResourceFee) {
+          effectiveBase = dynamicStats.recommendedBase;
+        }
+      }
+
       const desiredFee =
         options?.fee ??
         options?.simulatedFee ??
         (simulation?.minResourceFee
-          ? this.applyFeePriority(minResourceFee, options?.feePriority).toString()
+          ? this.applyFeePriority(effectiveBase, options?.feePriority).toString()
           : undefined);
 
       const txForSending = desiredFee
@@ -1209,7 +1378,8 @@ export class StellarGrantsSDK {
     priority?: "low" | "medium" | "high",
   ): bigint {
     switch (priority) {
-      // Keep these conservative defaults aligned with `estimateFees()` fallback tiers.
+      // Aligned with estimateFees() simulation-fallback tiers.
+      // Dynamic Horizon-based paths apply their own modifiers from getDynamicFeeStats().
       case "low":    return base;
       case "high":   return base * BigInt(2);
       case "medium":

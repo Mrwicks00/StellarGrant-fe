@@ -15,6 +15,9 @@ export type {
   TransactionResult,
   WaitForTransactionOptions,
   TransactionPollingStatus,
+  GrantData,
+  GrantFund,
+  MilestoneData,
 } from "./types";
 
 // IPFS helpers — Task #488

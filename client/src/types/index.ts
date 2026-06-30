@@ -74,12 +74,45 @@ export type GrantCreateInput = {
  * The contract return type is currently `unknown` at the SDK boundary, so
  * downstream apps can narrow this to their own domain model.
  */
-export type GrantData = Record<string, unknown> & {
-  id?: number;
-  title?: string;
-  description?: string;
-  status?: string;
-};
+export interface GrantFund {
+  funder: string;
+  amount: bigint;
+}
+
+export interface GrantData {
+  id: bigint;
+  owner: string;
+  title: string;
+  description: string;
+  token: string;
+  status: number;
+  total_amount: bigint;
+  milestone_amount: bigint;
+  reviewers: string[];
+  total_milestones: number;
+  milestones_paid_out: number;
+  escrow_balance: bigint;
+  funders: GrantFund[];
+  reason?: string;
+  timestamp: bigint;
+  require_compliance?: number;
+}
+
+export interface MilestoneData {
+  idx: number;
+  description: string;
+  amount: bigint;
+  state: number;
+  votes: Map<string, boolean> | Record<string, boolean>;
+  approvals: number;
+  rejections: number;
+  reasons: Map<string, string> | Record<string, string>;
+  status_updated_at: bigint;
+  proof_url?: string;
+  submission_timestamp: bigint;
+  deadline?: bigint;
+  reviewer_count_snapshot: number;
+}
 
 export type GrantFundInput = {
   grantId: number;
